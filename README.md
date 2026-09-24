@@ -106,6 +106,9 @@ sudo mkdir -p /opt/lintv
 sudo chown -R $USER:lintv /opt/lintv
 sudo find /opt/lintv -type d -exec chmod 2750 {} +    # setgid: new files inherit the lintv group
 sudo find /opt/lintv -type f -exec chmod g+r,o-rwx {} +
+
+# State (channels.json, guide.json): writable by both you and the service
+sudo install -d -o $USER -g lintv -m 2770 /var/lib/lintv
 ```
 
 After this setup:
@@ -132,11 +135,16 @@ Edit `/opt/lintv/appsettings.json`:
 ```json
 "Urls": "http://0.0.0.0:5249",
 "LinTv": {
-  "Adapter": 0
+  "StorageDirectory": "/var/lib/lintv",
+  "Adapter": 0,
+  "LockWaitSeconds": 5
 }
 ```
 
-`Urls` binds all interfaces so the service is reachable on the LAN. The ASP.NET default is `localhost:5000`, which is loopback only. `Adapter` is the `N` in `/dev/dvb/adapterN`.
+- `Urls` binds all interfaces so the service is reachable on the LAN. The ASP.NET default is `localhost:5000`, which is loopback only.
+- `StorageDirectory` holds the scanned lineup and the guide data.
+- `Adapter` is the `N` in `/dev/dvb/adapterN`.
+- `LockWaitSeconds` is how long to wait for a signal lock before treating an RF channel as empty.
 
 ### 5. Run as a systemd service
 
@@ -175,3 +183,24 @@ Tune a channel by its center frequency in Hz. For example, RF 9 is 189 MHz. For 
 curl "http://localhost:5249/test?frequencyHz=189000000"
 dvb-fe-tool -a 0 -m    # in another shell: look for "Lock"
 ```
+
+## Usage
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /` | Test page with buttons to start scans |
+| `POST /scan/channels` | Start a channel scan in the background (409 if one is running) |
+| `GET /scan/channels` | Channel scan progress and result |
+| `GET /lineup.m3u` | Scanned channels as an M3U playlist |
+| `GET /auto/v{major}.{minor}` | Stream a channel, e.g. `/auto/v9.1` |
+| `GET /stream?frequencyHz=N` | Stream a raw RF multiplex |
+
+A channel scan tunes US RF channels 2–36 and reads the ATSC virtual channel table on each one that locks. It saves the result to `channels.json`. Each empty RF channel costs `LockWaitSeconds`, so a full scan takes a few minutes. If the scan finds nothing, for example because the antenna is disconnected, the existing lineup is kept.
+
+```bash
+curl -X POST http://localhost:5249/scan/channels
+curl http://localhost:5249/scan/channels # poll until "inProgress": false
+curl http://localhost:5249/lineup.m3u
+```
+
+To watch in VLC, open `http://<host>:5249/lineup.m3u` as a network stream. VLC then shows the playlist as a list of channels. Streams are currently the whole RF multiplex. The M3U includes a VLC-only `#EXTVLCOPT:program=` line so VLC plays the right subchannel.

@@ -70,9 +70,10 @@ namespace LinTv.Core.Services
 
         public async Task ReleaseAsync(CancellationToken ct)
         {
+            // Outside the try: if the wait is cancelled we never held the gate, so mustn't release it.
+            await _gate.WaitAsync(ct);
             try
             {
-                await _gate.WaitAsync(ct);
                 if (--_holders == 0)
                 {
                     _currentFrequency = null;
