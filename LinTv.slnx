@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="LinTv.Api/LinTv.Api.csproj" />
+  <Project Path="LinTv.Core/LinTv.Core.csproj" />
+  <Project Path="LinTv.Linux/LinTv.Linux.csproj" />
+</Solution>

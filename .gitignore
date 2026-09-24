@@ -1,0 +1,15 @@
+# Build output
+bin/
+obj/
+publish/
+*.tar.gz
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Local deploy credentials (see publish.settings.example.json)
+publish.settings.json
