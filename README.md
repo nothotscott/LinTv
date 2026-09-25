@@ -137,14 +137,21 @@ Edit `/opt/lintv/appsettings.json`:
 "LinTv": {
   "StorageDirectory": "/var/lib/lintv",
   "Adapter": 0,
-  "LockWaitSeconds": 5
+  "LockWaitSeconds": 5,
+  "ChannelScanTimeoutSeconds": 5,
+  "EpgScanTimeoutSeconds": 60,
+  "FriendlyName": "LinTv",
+  "DeviceId": "4C696E54"
 }
 ```
 
 - `Urls` binds all interfaces so the service is reachable on the LAN. The ASP.NET default is `localhost:5000`, which is loopback only.
-- `StorageDirectory` holds the scanned lineup and the guide data.
+- `StorageDirectory` holds the scanned lineup (`channels.json`) and the guide (`guide.json`).
 - `Adapter` is the `N` in `/dev/dvb/adapterN`.
+- `FriendlyName` and `DeviceId` identify the tuner to Plex and Jellyfin. `DeviceId` is 8 hex digits. Keep it stable, because changing it makes clients see a new device and lose its channel mapping.
 - `LockWaitSeconds` is how long to wait for a signal lock before treating an RF channel as empty.
+- `ChannelScanTimeoutSeconds` is how long a scan waits for the virtual channel table on an RF channel that has a signal lock.
+- `EpgScanTimeoutSeconds` is the most time a guide scan spends on each multiplex. If it runs out, the scan keeps what it has collected, which is usually the next several hours.
 
 ### 5. Run as a systemd service
 
@@ -177,12 +184,7 @@ journalctl -u lintv -f
 
 ### 6. Smoke test
 
-Tune a channel by its center frequency in Hz. For example, RF 9 is 189 MHz. For UHF channels, use `(RF - 14) * 6 + 473` MHz.
-
-```bash
-curl "http://localhost:5249/test?frequencyHz=189000000"
-dvb-fe-tool -a 0 -m    # in another shell: look for "Lock"
-```
+Open `http://<host>:5249/` and start a channel scan, or use `curl` (see **Usage**). Once the scan completes, `lineup.json` should list your channels. While a stream is playing, `dvb-fe-tool -a 0 -m` in another shell shows the signal lock.
 
 ## Usage
 
@@ -191,16 +193,45 @@ dvb-fe-tool -a 0 -m    # in another shell: look for "Lock"
 | `GET /` | Test page with buttons to start scans |
 | `POST /scan/channels` | Start a channel scan in the background (409 if one is running) |
 | `GET /scan/channels` | Channel scan progress and result |
+| `POST /scan/epg` | Start a guide scan of every multiplex in the lineup |
+| `GET /scan/epg` | Guide scan progress and result |
+| `GET /stream/{major}.{minor}` | Stream a virtual channel as MPEG-TS, e.g. `/stream/8.1` |
 | `GET /lineup.m3u` | Scanned channels as an M3U playlist |
-| `GET /auto/v{major}.{minor}` | Stream a channel, e.g. `/auto/v9.1` |
-| `GET /stream?frequencyHz=N` | Stream a raw RF multiplex |
+| `GET /guide.xml` | Guide as XMLTV |
+| `GET /discover.json` | HDHomeRun device info (`DeviceID`, `TunerCount`, `LineupURL`) |
+| `GET /lineup.json` | HDHomeRun lineup (`GuideNumber`, `GuideName`, `URL`) |
+| `GET /lineup_status.json` | HDHomeRun scan status (`ScanInProgress`, `Progress`, `Found`) |
+
+The HDHomeRun endpoints (`discover.json`, `lineup*.json`) use HDHomeRun's own PascalCase keys, because Plex and Jellyfin match on the exact names. The other JSON endpoints use ASP.NET's default camelCase.
 
 A channel scan tunes US RF channels 2–36 and reads the ATSC virtual channel table on each one that locks. It saves the result to `channels.json`. Each empty RF channel costs `LockWaitSeconds`, so a full scan takes a few minutes. If the scan finds nothing, for example because the antenna is disconnected, the existing lineup is kept.
 
 ```bash
 curl -X POST http://localhost:5249/scan/channels
 curl http://localhost:5249/scan/channels # poll until "inProgress": false
-curl http://localhost:5249/lineup.m3u
+curl http://localhost:5249/lineup.json
 ```
 
 To watch in VLC, open `http://<host>:5249/lineup.m3u` as a network stream. VLC then shows the playlist as a list of channels. Streams are currently the whole RF multiplex. The M3U includes a VLC-only `#EXTVLCOPT:program=` line so VLC plays the right subchannel.
+
+### Guide (EPG)
+
+A guide scan reads the guide data that stations broadcast alongside their channels (ATSC PSIP):
+- **MGT:** lists which PIDs carry the event tables and descriptions.
+- **EIT:** each table covers 3 hours of events per channel, keyed by the channel's `SourceId`.
+- **ETT:** holds the event descriptions.
+- **STT:** gives the offset between GPS time and UTC.
+
+The scan tunes each multiplex in the lineup once, because one multiplex's tables cover all of its subchannels. It stops as soon as every listed table has arrived, or after `EpgScanTimeoutSeconds`. Most stations broadcast somewhere between 12 hours and a few days of guide data.
+
+Each scan merges into `guide.json`. For each channel, the new events replace any stored events in the time window they cover, so rescheduled or cancelled programmes disappear. Programmes that ended more than 6 hours ago are dropped.
+
+```bash
+curl -X POST http://localhost:5249/scan/epg
+curl http://localhost:5249/scan/epg      # poll until "inProgress": false
+curl http://localhost:5249/guide.xml
+```
+
+XMLTV channel ids are the `major.minor` numbers, matching `GuideNumber` in `lineup.json` and `tvg-id` in the M3U. In Jellyfin, add `http://<host>:5249/guide.xml` under Live TV → TV Guide Data Providers → XMLTV. In Plex, choose the XMLTV guide option during DVR setup and give it the same URL.
+
+Limitation: titles or descriptions sent with ATSC Huffman compression (A/65 Annex C) are skipped for now. That's rare for US broadcast TV.

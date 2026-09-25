@@ -10,7 +10,8 @@ namespace LinTv.Core.Writers
         public string Write(IReadOnlyList<VirtualChannel> channels, string baseUrl)
         {
             baseUrl = baseUrl.TrimEnd('/');
-            var sb = new StringBuilder("#EXTM3U\n");
+            // x-tvg-url points guide-aware players at the XMLTV guide.
+            var sb = new StringBuilder($"#EXTM3U x-tvg-url=\"{ChannelUrls.Guide(baseUrl)}\"\n");
 
             foreach (var c in channels.OrderBy(c => c.Major).ThenBy(c => c.Minor))
             {
@@ -21,7 +22,7 @@ namespace LinTv.Core.Writers
                 // this makes VLC pick the right subchannel. Other clients ignore it.
                 sb.Append($"#EXTVLCOPT:program={c.ProgramNumber}\n");
 
-                sb.Append($"{baseUrl}/auto/v{c.Id}\n");
+                sb.Append($"{ChannelUrls.Stream(baseUrl, c)}\n");
             }
 
             return sb.ToString();

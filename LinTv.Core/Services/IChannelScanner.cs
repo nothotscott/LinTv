@@ -4,7 +4,7 @@ namespace LinTv.Core.Services
 {
     public interface IChannelScanner
     {
-        ChannelScanStatus Status { get; }
+        ScanStatus Status { get; }
 
         /// Starts a scan in the background. False if one is already running.
         bool TryStartScan(CancellationToken ct);

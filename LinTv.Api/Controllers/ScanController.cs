@@ -10,13 +10,17 @@ namespace LinTv.Api.Controllers
     {
         public IChannelScanner ChannelScanner { private get; init; }
 
+        public IEpgScanner EpgScanner { private get; init; }
+
         public IHostApplicationLifetime Lifetime { private get; init; }
 
         public ScanController(
             IChannelScanner channelScanner,
+            IEpgScanner epgScanner,
             IHostApplicationLifetime lifetime)
         {
             ChannelScanner = channelScanner;
+            EpgScanner = epgScanner;
             Lifetime = lifetime;
         }
 
@@ -29,6 +33,16 @@ namespace LinTv.Api.Controllers
                 : Conflict(ChannelScanner.Status);
 
         [HttpGet("channels")]
-        public ChannelScanStatus ChannelScanStatus() => ChannelScanner.Status;
+        public ScanStatus ChannelScanStatus() => ChannelScanner.Status;
+
+        /// Up to EpgScanTimeoutSeconds per multiplex in the lineup; poll GET /scan/epg for progress.
+        [HttpPost("epg")]
+        public IActionResult StartEpgScan() =>
+            EpgScanner.TryStartScan(Lifetime.ApplicationStopping)
+                ? Accepted("/scan/epg", EpgScanner.Status)
+                : Conflict(EpgScanner.Status);
+
+        [HttpGet("epg")]
+        public ScanStatus EpgScanStatus() => EpgScanner.Status;
     }
 }

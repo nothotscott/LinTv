@@ -21,22 +21,12 @@ namespace LinTv.Api.Controllers
             ChannelStore = channelStore;
         }
 
-        /// Whole RF multiplex as MPEG-TS; open in VLC via Media > Open Network Stream:
-        ///   http://&lt;host&gt;:5249/stream?frequencyHz=189000000
-        /// Pick a subchannel in VLC's Playback > Program menu.
-        [HttpGet("stream")]
-        public Task<IActionResult> Stream(long frequencyHz, CancellationToken ct) =>
-            StreamMultiplexAsync(frequencyHz, ct);
-
-        /// HDHomeRun-style channel URL, e.g. /auto/v9.1. Streams the channel's whole RF multiplex
-        /// for now; VLC picks the subchannel via the #EXTVLCOPT:program line in /lineup.m3u.
-        [HttpGet("auto/v{channel}")]
-        public async Task<IActionResult> Channel(string channel, CancellationToken ct)
+        /// Stream a virtual channel, e.g. /stream/8.1 (see ChannelUrls). Sends the channel's whole
+        /// RF multiplex for now; VLC picks the subchannel via the #EXTVLCOPT:program line in
+        /// /lineup.m3u, or manually via Playback > Program.
+        [HttpGet("stream/{major:int}.{minor:int}")]
+        public async Task<IActionResult> Stream(int major, int minor, CancellationToken ct)
         {
-            var parts = channel.Split('.');
-            if (parts.Length != 2 || !int.TryParse(parts[0], out var major) || !int.TryParse(parts[1], out var minor))
-                return NotFound();
-
             var virtualChannel = await ChannelStore.FindAsync(major, minor);
             if (virtualChannel is null) return NotFound();
 

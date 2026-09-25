@@ -27,6 +27,8 @@ builder.Services.AddSingleton<IChannelStore, JsonChannelStore>();
 builder.Services.AddSingleton<IGuideStore, JsonGuideStore>();
 builder.Services.AddSingleton<IChannelScanner, ChannelScanner>();
 builder.Services.AddSingleton<IM3uWriter, M3uWriter>();
+builder.Services.AddSingleton<IEpgScanner, EpgScanner>();
+builder.Services.AddSingleton<IXmlTvWriter, XmlTvWriter>();
 
 var app = builder.Build();
 

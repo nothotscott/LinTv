@@ -17,5 +17,17 @@ namespace LinTv.Core.Configuration
         public int LockWaitSeconds { get; set; }
 
         public int ChannelScanTimeoutSeconds { get; set; }
+
+        /// How long to collect guide tables per multiplex before settling for what arrived.
+        /// Far-future EITs and ETTs repeat slowly (up to a minute or more).
+        public int EpgScanTimeoutSeconds { get; set; } = 60;
+
+        /// Name Plex/Jellyfin show for the tuner.
+        public string FriendlyName { get; set; } = "LinTv";
+
+        /// HDHomeRun device ID: 8 hex digits. Clients key the tuner (and its guide mapping) on
+        /// this, so keep it stable -- changing it makes Plex/Jellyfin see a new device.
+        /// The default is "LinT" in ASCII.
+        public string DeviceId { get; set; } = "4C696E54";
     }
 }

@@ -14,7 +14,7 @@ namespace LinTv.Core.Services
     public class ChannelScanner : IChannelScanner
     {
         private int _running;
-        private volatile ChannelScanStatus _status = ChannelScanStatus.Idle;
+        private volatile ScanStatus _status = ScanStatus.Idle;
 
         public ILogger Logger { private get; set; }
 
@@ -24,7 +24,7 @@ namespace LinTv.Core.Services
 
         public IChannelStore ChannelStore { private get; init; }
 
-        public ChannelScanStatus Status => _status;
+        public ScanStatus Status => _status;
 
         public ChannelScanner(
             ILogger<ChannelScanner> logger,
@@ -59,7 +59,7 @@ namespace LinTv.Core.Services
         private bool TryBegin()
         {
             if (Interlocked.CompareExchange(ref _running, 1, 0) != 0) return false;
-            _status = new ChannelScanStatus(true, 0, 0, _status.LastCompleted, null);
+            _status = new ScanStatus(true, 0, 0, _status.LastCompleted, null);
             return true;
         }
 
@@ -95,7 +95,7 @@ namespace LinTv.Core.Services
                     Logger.LogWarning("Channel scan found nothing; keeping the existing lineup");
 
                 Logger.LogInformation("Channel scan complete: {Count} channels", channels.Count);
-                _status = new ChannelScanStatus(false, 100, channels.Count, DateTimeOffset.UtcNow, null);
+                _status = new ScanStatus(false, 100, channels.Count, DateTimeOffset.UtcNow, null);
                 return channels;
             }
             catch (Exception ex)

@@ -35,7 +35,10 @@ namespace LinTv.Api.Controllers
               <p><a href="/scan/epg">EPG scan status</a></p>
 
               <h2>Lineup</h2>
-              <p><a href="/lineup.m3u">lineup.m3u</a></p>
+              <p><a href="/lineup.m3u">lineup.m3u</a> · <a href="/lineup.json">lineup.json</a></p>
+
+              <h2>Guide</h2>
+              <p><a href="/guide.xml">guide.xml</a></p>
             </body>
             </html>
             """;
