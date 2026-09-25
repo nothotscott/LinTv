@@ -1,22 +1,26 @@
 # LinTv
 
-An HDHomeRun-compatible network tuner for a Hauppauge WinTV-HVR-1800 PCIe card on Linux. It is an ASP.NET Core service that uses the Linux DVB API (`/dev/dvb/adapterN`) to tune ATSC broadcasts and serves them to Plex and Jellyfin as if the card were an HDHomeRun.
+**Turn a Linux PC with an ATSC tuner card into a network TV tuner that Plex, Jellyfin and VLC can use.**
 
-Planned features:
+LinTv presents itself as an [HDHomeRun](https://www.silicondust.com/), the network tuner that media servers already support. It's built for a Hauppauge WinTV-HVR-1800 PCIe card receiving US/Canadian over-the-air (ATSC 1.0) broadcasts. It should work with any ATSC card that has a Linux DVB driver.
 
-- **Channel scan**: a scan of ATSC RF channels, published as an M3U playlist
-- **EPG scan**: guide data read from the broadcast PSIP tables, published as XMLTV
-- **HDHomeRun emulation**: the `discover.json`, `lineup.json` and `lineup_status.json` endpoints
+## What it does
 
-## Projects
+- **Channel scan:** finds every station your antenna can receive, including subchannels (8.1, 8.2, …). If a channel comes in on more than one frequency, it picks the strongest signal.
+- **Live TV:** streams each channel over HTTP as a standard MPEG-TS, containing just that channel.
+- **Program guide:** reads the guide data stations broadcast over the air and serves it as XMLTV, with no internet guide service needed.
+- **HDHomeRun emulation:** serves `discover.json`, `lineup.json` and `lineup_status.json`, so Plex and Jellyfin can add it as a tuner.
+- **Channel map:** attach network names (e.g. `FOX`) to local call signs to make guide matching easier.
+- **Diagnostics:** keeps daily log files you can read over HTTP.
 
-| Project | Purpose |
-|---|---|
-| `LinTv.Api` | ASP.NET Core host and HTTP endpoints |
-| `LinTv.Core` | Domain models, configuration, tuner arbitration |
-| `LinTv.Linux` | Linux DVB driver (`ioctl` against `/dev/dvb`) |
+For how it works inside (tuner sharing, PSIP parsing, demuxing), see [docs/ABOUT.md](docs/ABOUT.md).
 
-Package versions are managed centrally in `Directory.Packages.props`.
+## Requirements
+
+- A Linux box (Debian/Ubuntu below) with an ATSC tuner card that shows up under `/dev/dvb`
+- An antenna
+- The .NET 10 ASP.NET Core runtime
+- To build and publish from a dev machine: the .NET 10 SDK and PowerShell (`publish.ps1`)
 
 ## Deploy (Debian / Ubuntu)
 
@@ -78,27 +82,9 @@ dotnet --list-runtimes    # expect Microsoft.AspNetCore.App 10.0.x
 
 Don't mix the Ubuntu and Microsoft feeds for the same packages. If you do, `dotnet` may fail to find installed runtimes. See the [.NET on Ubuntu docs](https://learn.microsoft.com/dotnet/core/install/linux-ubuntu) if you run into this.
 
-### 3. Publish and copy
+### 3. One-time server setup
 
-From the dev machine (Windows), `publish.ps1` builds for `linux-x64` and uploads the output to `/tmp/lintv`. It looks for connection settings in this order: script parameters, then environment variables, then a gitignored `publish.settings.json` (copy it from `publish.settings.example.json`):
-
-| Setting | Env var | Parameter |
-|---|---|---|
-| Host | `LINTV_HOST` | `-HostName` |
-| User | `LINTV_USER` | `-User` |
-| Password | `LINTV_PASSWORD` | `-Password` |
-| Port (default 22) | `LINTV_PORT` | `-Port` |
-
-```powershell
-.\publish.ps1                          # stage to /tmp/lintv
-.\publish.ps1 -RemoteDir /opt/lintv    # deploy straight to the install dir (after the setup below)
-```
-
-Each run empties the target directory before extracting, so stale files from earlier builds don't linger.
-
-With a password set, the upload goes through the [Posh-SSH](https://github.com/darkoperator/Posh-SSH) module, because Windows OpenSSH can't take a password non-interactively. Install it once with `Install-Module Posh-SSH -Scope CurrentUser`. With no password set, the script uses plain `ssh`/`scp` with SSH key auth.
-
-One-time server setup:
+Create a service user and the install and state directories:
 
 ```bash
 sudo useradd --system --no-create-home --groups video lintv
@@ -107,7 +93,7 @@ sudo chown -R $USER:lintv /opt/lintv
 sudo find /opt/lintv -type d -exec chmod 2750 {} +    # setgid: new files inherit the lintv group
 sudo find /opt/lintv -type f -exec chmod g+r,o-rwx {} +
 
-# State (channels.json, guide.json): writable by both you and the service
+# State (channels, guide, channel map, logs): writable by both you and the service
 sudo install -d -o $USER -g lintv -m 2770 /var/lib/lintv
 ```
 
@@ -128,9 +114,29 @@ sudo usermod -aG video $USER
 groups                           # should list video
 ```
 
-### 4. Configure
+### 4. Publish from your dev machine
 
-Edit `/opt/lintv/appsettings.json`:
+`publish.ps1` (Windows PowerShell) builds for `linux-x64` and uploads the output. It looks for connection settings in this order: script parameters, then environment variables, then a gitignored `publish.settings.json` (copy it from `publish.settings.example.json`):
+
+| Setting | Env var | Parameter |
+|---|---|---|
+| Host | `LINTV_HOST` | `-HostName` |
+| User | `LINTV_USER` | `-User` |
+| Password | `LINTV_PASSWORD` | `-Password` |
+| Port (default 22) | `LINTV_PORT` | `-Port` |
+
+```powershell
+.\publish.ps1 -RemoteDir /opt/lintv    # deploy straight to the install dir
+.\publish.ps1                          # or stage to /tmp/lintv
+```
+
+Each run empties the target directory before extracting, so stale files from earlier builds don't linger. That includes `appsettings.json`, so keep server-specific settings somewhere the deploy won't overwrite them (see **Configure**).
+
+With a password set, the upload goes through the [Posh-SSH](https://github.com/darkoperator/Posh-SSH) module, because Windows OpenSSH can't take a password non-interactively. Install it once with `Install-Module Posh-SSH -Scope CurrentUser`. With no password set, the script uses plain `ssh`/`scp` with SSH key auth.
+
+### 5. Configure
+
+Settings live in the `LinTv` section of `/opt/lintv/appsettings.json`:
 
 ```json
 "Urls": "http://0.0.0.0:5249",
@@ -146,16 +152,21 @@ Edit `/opt/lintv/appsettings.json`:
 }
 ```
 
-- `Urls` binds all interfaces so the service is reachable on the LAN. The ASP.NET default is `localhost:5000`, which is loopback only.
-- `StorageDirectory` holds the scanned lineup (`channels.json`), the guide (`guide.json`), your channel map (`channel-map.json`) and the log files (`logs/`).
-- `Adapter` is the `N` in `/dev/dvb/adapterN`.
-- `FriendlyName` and `DeviceId` identify the tuner to Plex and Jellyfin. `DeviceId` is 8 hex digits. Keep it stable, because changing it makes clients see a new device and lose its channel mapping.
-- `LockWaitSeconds` is how long to wait for a signal lock before treating an RF channel as empty.
-- `ChannelScanTimeoutSeconds` is how long a scan waits for the virtual channel table on an RF channel that has a signal lock.
-- `LogRetentionDays` is how many days of log files to keep in `{StorageDirectory}/logs` (see **Logs**).
-- `EpgScanTimeoutSeconds` is the most time a guide scan spends on each multiplex. If it runs out, the scan keeps what it has collected, which is usually the next several hours.
+| Setting | Meaning |
+|---|---|
+| `Urls` | Listen address. `0.0.0.0` makes it reachable on the LAN. The ASP.NET default, `localhost:5000`, is loopback only. |
+| `StorageDirectory` | Holds the lineup (`channels.json`), the guide (`guide.json`), your channel map (`channel-map.json`) and the logs (`logs/`). |
+| `Adapter` | The `N` in `/dev/dvb/adapterN`. |
+| `LockWaitSeconds` | How long to wait for a signal lock before treating an RF channel as empty. |
+| `ChannelScanTimeoutSeconds` | How long a scan waits for a locked channel's channel table. |
+| `EpgScanTimeoutSeconds` | The most time a guide scan spends per frequency. If it runs out, it keeps what it has collected, usually the next several hours. |
+| `LogRetentionDays` | Days of log files to keep. |
+| `FriendlyName` | The name Plex and Jellyfin show. |
+| `DeviceId` | 8 hex digits identifying the tuner to clients. **Keep it stable**: changing it makes clients see a new device and lose their channel setup. |
 
-### 5. Run as a systemd service
+Any setting can also be set with an environment variable, which survives redeploys. For example, `LinTv__Adapter=1` in the systemd unit.
+
+### 6. Run as a systemd service
 
 `/etc/systemd/system/lintv.service`:
 
@@ -184,79 +195,28 @@ sudo systemctl enable --now lintv
 journalctl -u lintv -f
 ```
 
-### 6. Smoke test
+## Getting started
 
-Open `http://<host>:5249/` and start a channel scan, or use `curl` (see **Usage**). Once the scan completes, `lineup.json` should list your channels. While a stream is playing, `dvb-fe-tool -a 0 -m` in another shell shows the signal lock.
+1. **Scan for channels.** Open `http://<host>:5249/` and click **Start channel scan**. A full scan takes a few minutes. Watch progress at `/scan/channels`, or with `curl http://<host>:5249/scan/channels`.
+2. **Scan the guide.** On the same page, click **Start EPG scan**. It takes up to `EpgScanTimeoutSeconds` per frequency.
+3. **Watch something.** Open `http://<host>:5249/lineup.m3u` in VLC (Media → Open Network Stream) to get a channel list.
+4. **Add it to your media server:**
+   - **Jellyfin:** Dashboard → Live TV → Tuner Devices → Add → HDHomeRun, `http://<host>:5249`. Then go to TV Guide Data Providers → Add → XMLTV, `http://<host>:5249/guide.xml`.
+   - **Plex:** Settings → Live TV & DVR → Set up → "Don't see your device?", `<host>:5249`. When asked for a guide, choose XMLTV, `http://<host>:5249/guide.xml`.
 
-## Usage
+   Clients won't find LinTv on their own yet, so enter the address by hand.
 
-| Endpoint | Purpose |
-|---|---|
-| `GET /` | Test page with buttons to start scans |
-| `POST /scan/channels` | Start a channel scan in the background (409 if one is running) |
-| `GET /scan/channels` | Channel scan progress and result |
-| `POST /scan/epg` | Start a guide scan of every multiplex in the lineup |
-| `GET /scan/epg` | Guide scan progress and result |
-| `GET /stream/{major}.{minor}` | Stream a virtual channel as a single-program MPEG-TS, e.g. `/stream/8.1` |
-| `GET /stream/{major}.{minor}/{index}` | Stream a specific place the channel is received, e.g. `/stream/10.1/1` (index 0 = `/stream/10.1`) |
-| `GET /lineup.m3u` | Scanned channels as an M3U playlist |
-| `GET /guide.xml` | Guide as XMLTV |
-| `GET /channel-map` | Extra guide display-names per channel |
-| `PUT /channel-map/{major}.{minor}` | Set a channel's extra names, body `["FOX"]` |
-| `DELETE /channel-map/{major}.{minor}` | Remove a channel's extra names |
-| `GET /logs?lines=N| `GET /guide.xml` | Guide as XMLTV |file=F` | Tail of a log file as plain text (default: newest file, 200 lines) |
-| `GET /logs/files` | Log files, newest first |
-| `GET /discover.json` | HDHomeRun device info (`DeviceID`, `TunerCount`, `LineupURL`) |
-| `GET /lineup.json` | HDHomeRun lineup (`GuideNumber`, `GuideName`, `URL`) |
-| `GET /lineup_status.json` | HDHomeRun scan status (`ScanInProgress`, `Progress`, `Found`) |
+Rerun the channel scan if stations change frequency or number. A stream that returns 503 with "not found … try a channel scan" is the sign. Rerun the EPG scan to refresh the guide.
 
-The HDHomeRun endpoints (`discover.json`, `lineup*.json`) use HDHomeRun's own PascalCase keys, because Plex and Jellyfin match on the exact names. The other JSON endpoints use ASP.NET's default camelCase.
+## Channel map
 
-A channel scan tunes US RF channels 2–36 and reads the ATSC virtual channel table on each one that locks. It saves the result to `channels.json`. Each empty RF channel costs `LockWaitSeconds`, so a full scan takes a few minutes. If the scan finds nothing, for example because the antenna is disconnected, the existing lineup is kept.
+Stations broadcast their call sign (`WTVT-DT`), but you may want the network (`FOX`) in the guide, for example to match channels in Jellyfin. A channel map adds extra names to the guide:
 
 ```bash
-curl -X POST http://localhost:5249/scan/channels
-curl http://localhost:5249/scan/channels # poll until "inProgress": false
-curl http://localhost:5249/lineup.json
+curl -X PUT -H "Content-Type: application/json" -d '["FOX"]' http://<host>:5249/channel-map/13.1
 ```
 
-To watch in VLC, open `http://<host>:5249/lineup.m3u` as a network stream. VLC then shows the playlist as a list of channels.
-
-Each stream carries only the one program, not the whole RF multiplex. The server rewrites the program list (PAT) to include just this channel and passes through the channel's PMT, audio, video and timing (PCR) streams. Other subchannels, PSIP and null packets are dropped. If the program isn't in the multiplex within 5 seconds, for example because the station renumbered, the stream returns 503 and you should run a new channel scan.
-
-The same `major.minor` can be received on several RF channels, for example from a translator or a neighbouring market. A scan keeps every copy and records each one's signal (`SignalSnrDb`, `SignalStrengthPercent`). It ranks copies by SNR, then strength, then RF, and stores the rank as `Index` 0, 1 and so on in `channels.json`. So `/stream/{major}.{minor}` (index 0) is the best connection at the time of the scan. The lineups (`lineup.json`, `lineup.m3u`, `guide.xml`) list only the primary (index 0), because clients need each channel number to be unique. Alternates are reachable at `/stream/{major}.{minor}/{index}`.
-
-### Guide (EPG)
-
-A guide scan reads the guide data that stations broadcast alongside their channels (ATSC PSIP):
-- **MGT:** lists which PIDs carry the event tables and descriptions.
-- **EIT:** each table covers 3 hours of events per channel, keyed by the channel's `SourceId`.
-- **ETT:** holds the event descriptions.
-- **STT:** gives the offset between GPS time and UTC.
-
-The scan tunes each multiplex in the lineup once, because one multiplex's tables cover all of its subchannels. It stops as soon as every listed table has arrived, or after `EpgScanTimeoutSeconds`. Most stations broadcast somewhere between 12 hours and a few days of guide data.
-
-Each scan merges into `guide.json`. For each channel, the new events replace any stored events in the time window they cover, so rescheduled or cancelled programmes disappear. Programmes that ended more than 6 hours ago are dropped.
-
-```bash
-curl -X POST http://localhost:5249/scan/epg
-curl http://localhost:5249/scan/epg      # poll until "inProgress": false
-curl http://localhost:5249/guide.xml
-```
-
-XMLTV channel ids are the `major.minor` numbers, matching `GuideNumber` in `lineup.json` and `tvg-id` in the M3U. In Jellyfin, add `http://<host>:5249/guide.xml` under Live TV → TV Guide Data Providers → XMLTV. In Plex, choose the XMLTV guide option during DVR setup and give it the same URL.
-
-Limitation: titles or descriptions sent with ATSC Huffman compression (A/65 Annex C) are skipped for now. That's rare for US broadcast TV.
-
-### Channel map
-
-A channel map adds extra `display-name`s to a channel in `guide.xml`. For example, 13.1 broadcasts as `WTVT-DT`, and mapping it to `FOX` lets Jellyfin or Plex match the channel to its network's guide listing. Set a mapping over the API:
-
-```bash
-curl -X PUT -H "Content-Type: application/json" -d '["FOX"]' http://localhost:5249/channel-map/13.1
-```
-
-Or edit `{StorageDirectory}/channel-map.json` directly. It accepts comments, trailing commas and any property-name casing. Changes are picked up on the next request, with no restart needed.
+Or edit `/var/lib/lintv/channel-map.json` directly. Changes apply on the next request, with no restart needed:
 
 ```json
 [
@@ -265,16 +225,33 @@ Or edit `{StorageDirectory}/channel-map.json` directly. It accepts comments, tra
 ]
 ```
 
-### Logs
+To have an AI assistant draft the map for your area, give it [docs/LLM-Channel-Map-Instructions.md](docs/LLM-Channel-Map-Instructions.md) along with your `lineup.json`.
 
-Besides the console (journald under systemd), logs are written to daily files, `{StorageDirectory}/logs/lintv-YYYYMMDD.log`. Files older than `LogRetentionDays` are deleted. Read them over HTTP:
+## Endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /` | Test page: start scans, links to everything below |
+| `POST /scan/channels`, `GET /scan/channels` | Start a channel scan in the background (409 if one is running) / show its progress |
+| `POST /scan/epg`, `GET /scan/epg` | Start a guide scan / show its progress |
+| `GET /stream/{major}.{minor}` | Live stream of a channel, e.g. `/stream/8.1` (the best-signal copy) |
+| `GET /stream/{major}.{minor}/{index}` | A specific copy of a channel received on several frequencies, e.g. `/stream/10.1/1` |
+| `GET /lineup.m3u` | Channels as an M3U playlist |
+| `GET /guide.xml` | Program guide as XMLTV |
+| `GET /discover.json`, `/lineup.json`, `/lineup_status.json` | HDHomeRun emulation for Plex/Jellyfin |
+| `GET /channel-map`, `PUT`/`DELETE /channel-map/{major}.{minor}` | View / set / remove extra guide names |
+| `GET /logs?lines=N&file=F`, `GET /logs/files` | Read the log (default: newest file, last 200 lines) / list log files |
+
+## Troubleshooting
+
+**Logs.** Logs go to the console (journald) and to daily files in `/var/lib/lintv/logs`:
 
 ```bash
-curl "http://localhost:5249/logs?lines=500"
-curl "http://localhost:5249/logs?lines=500" | grep -E "WRN|ERR"
+curl "http://<host>:5249/logs?lines=500"
+curl "http://<host>:5249/logs?lines=500" | grep -E "WRN|ERR"
 ```
 
-Levels come from the normal `Logging` section. `"LinTv": "Trace"` shows tuner and stream internals. To give the file its own levels, which is useful to keep the console quieter under systemd, use `Logging:File`:
+For tuner and stream detail, set `"LinTv": "Trace"` under `Logging:LogLevel`. To send the detail only to the file and keep journald quieter, set it under `Logging:File:LogLevel`:
 
 ```json
 "Logging": {
@@ -283,12 +260,27 @@ Levels come from the normal `Logging` section. `"LinTv": "Trace"` shows tuner an
 }
 ```
 
-Log lines worth knowing when the tuner misbehaves:
+Messages worth knowing:
 
 | Message | Meaning |
 |---|---|
-| `No data from dvr0 for Ns -- tuner stalled or signal lost?` | A stream is open but no packets are arriving. The message includes the current lock and SNR readings. |
-| `Waited Ns for tuner gate` | Something held the tuner lock for a long time, such as a slow tune or a stuck caller. |
-| `Tuner released with no holders` | A release without a matching acquire (a bug). The holder count is reset to 0. |
+| `No data from dvr0 for Ns -- tuner stalled or signal lost?` | A stream is open but no packets are arriving. Includes the current lock and SNR. |
+| `Waited Ns for tuner gate` | Something held the tuner for a long time, such as a slow tune or a stuck caller. |
 | `No lock after N ms (strength, SNR)` | Tuning failed. Strength and SNR show whether there was any signal at all. |
-| `Stream X for client <outcome> after Ns (MB, Mbps)` | One line per stream when it ends: client disconnected, program not found, or failed. |
+| `Tuner released with no holders` | A bug: a release without a matching acquire. |
+| `Stream X for client <outcome> after Ns (MB, Mbps)` | One line per stream when it ends. |
+
+**Common problems:**
+
+- **`Permission denied` on `frontend0`:** the user isn't in the `video` group, or hasn't logged in again since being added.
+- **Listening on `localhost:5000`:** `appsettings.json` wasn't found or has no `Urls` setting.
+- **"Tuner in use":** there's one tuner. A stream on one frequency blocks scans and streams on other frequencies until it ends.
+- **Missing guide text for a station:** it may send compressed text, which isn't supported yet (see [ABOUT](docs/ABOUT.md#known-limitations--next-steps)).
+
+## Development
+
+The solution is `LinTv.slnx`: .NET 10, with package versions in `Directory.Packages.props`. It builds and runs on Windows, but tuning needs Linux. See [CLAUDE.md](CLAUDE.md) for conventions and [docs/ABOUT.md](docs/ABOUT.md) for the architecture.
+
+## License
+
+MIT, see [LICENSE.md](LICENSE.md).
