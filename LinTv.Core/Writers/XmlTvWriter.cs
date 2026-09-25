@@ -9,8 +9,13 @@ namespace LinTv.Core.Writers
     /// major.minor numbers, matching tvg-id in the M3U and GuideNumber in lineup.json.
     public class XmlTvWriter : IXmlTvWriter
     {
-        public string Write(IReadOnlyList<VirtualChannel> channels, IReadOnlyList<GuideEvent> events)
+        public string Write(IReadOnlyList<VirtualChannel> channels, IReadOnlyList<GuideEvent> events,
+            IReadOnlyList<ChannelMapping> mappings)
         {
+            var extraNames = mappings
+                .GroupBy(m => m.Channel)
+                .ToDictionary(g => g.Key, g => g.SelectMany(m => m.DisplayNames).ToList());
+
             var settings = new XmlWriterSettings { Indent = true, Encoding = new UTF8Encoding(false) };
             using var buffer = new MemoryStream();
 
@@ -27,10 +32,15 @@ namespace LinTv.Core.Writers
                 {
                     xml.WriteStartElement("channel");
                     xml.WriteAttributeString("id", c.Id);
-                    // Several display-names help clients auto-match by name or by number.
-                    xml.WriteElementString("display-name", Clean($"{c.Id} {c.ShortName}"));
-                    xml.WriteElementString("display-name", Clean(c.ShortName));
-                    xml.WriteElementString("display-name", c.Id);
+                    // Several display-names help clients auto-match by name or by number; mapped
+                    // names (e.g. the network, "FOX") come last.
+                    var names = new[] { $"{c.Id} {c.ShortName}", c.ShortName, c.Id }
+                        .Concat(extraNames.GetValueOrDefault(c.Id) ?? [])
+                        .Select(Clean)
+                        .Where(n => !string.IsNullOrWhiteSpace(n))
+                        .Distinct(StringComparer.OrdinalIgnoreCase);
+                    foreach (var name in names)
+                        xml.WriteElementString("display-name", name);
                     xml.WriteEndElement();
                 }
 

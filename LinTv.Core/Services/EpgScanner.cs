@@ -133,6 +133,8 @@ namespace LinTv.Core.Services
             {
                 var bySource = channels.ToDictionary(c => c.SourceId);
                 var collector = new PsipGuideCollector(bySource.Keys.ToHashSet());
+                Logger.LogDebug("RF {Rf}: collecting guide for {Channels} (up to {Timeout}s)",
+                    rf, string.Join(", ", channels.Select(c => c.Id)), timeout.TotalSeconds);
                 bool complete = await CollectAsync(tuner, collector, timeout, ct);
 
                 var events = collector.GetEvents()

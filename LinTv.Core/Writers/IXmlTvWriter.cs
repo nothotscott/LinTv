@@ -7,6 +7,8 @@ namespace LinTv.Core.Writers
 {
     public interface IXmlTvWriter
     {
-        string Write(IReadOnlyList<VirtualChannel> channels, IReadOnlyList<GuideEvent> events);
+        /// <param name="mappings">User channel-map entries, added as extra display-names.</param>
+        string Write(IReadOnlyList<VirtualChannel> channels, IReadOnlyList<GuideEvent> events,
+            IReadOnlyList<ChannelMapping> mappings);
     }
 }

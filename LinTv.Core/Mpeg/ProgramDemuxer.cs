@@ -27,6 +27,9 @@ namespace LinTv.Core.Mpeg
         /// The PMT arrived; elementary streams are flowing.
         public bool StreamsFound => _streamPids.Count > 0;
 
+        /// Elementary-stream and PCR PIDs from the current PMT.
+        public IReadOnlyCollection<ushort> StreamPids => _streamPids;
+
         public ProgramDemuxer(ushort programNumber)
         {
             _programNumber = programNumber;

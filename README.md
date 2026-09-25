@@ -140,17 +140,19 @@ Edit `/opt/lintv/appsettings.json`:
   "LockWaitSeconds": 5,
   "ChannelScanTimeoutSeconds": 5,
   "EpgScanTimeoutSeconds": 60,
+  "LogRetentionDays": 7,
   "FriendlyName": "LinTv",
   "DeviceId": "4C696E54"
 }
 ```
 
 - `Urls` binds all interfaces so the service is reachable on the LAN. The ASP.NET default is `localhost:5000`, which is loopback only.
-- `StorageDirectory` holds the scanned lineup (`channels.json`) and the guide (`guide.json`).
+- `StorageDirectory` holds the scanned lineup (`channels.json`), the guide (`guide.json`), your channel map (`channel-map.json`) and the log files (`logs/`).
 - `Adapter` is the `N` in `/dev/dvb/adapterN`.
 - `FriendlyName` and `DeviceId` identify the tuner to Plex and Jellyfin. `DeviceId` is 8 hex digits. Keep it stable, because changing it makes clients see a new device and lose its channel mapping.
 - `LockWaitSeconds` is how long to wait for a signal lock before treating an RF channel as empty.
 - `ChannelScanTimeoutSeconds` is how long a scan waits for the virtual channel table on an RF channel that has a signal lock.
+- `LogRetentionDays` is how many days of log files to keep in `{StorageDirectory}/logs` (see **Logs**).
 - `EpgScanTimeoutSeconds` is the most time a guide scan spends on each multiplex. If it runs out, the scan keeps what it has collected, which is usually the next several hours.
 
 ### 5. Run as a systemd service
@@ -199,6 +201,11 @@ Open `http://<host>:5249/` and start a channel scan, or use `curl` (see **Usage*
 | `GET /stream/{major}.{minor}/{index}` | Stream a specific place the channel is received, e.g. `/stream/10.1/1` (index 0 = `/stream/10.1`) |
 | `GET /lineup.m3u` | Scanned channels as an M3U playlist |
 | `GET /guide.xml` | Guide as XMLTV |
+| `GET /channel-map` | Extra guide display-names per channel |
+| `PUT /channel-map/{major}.{minor}` | Set a channel's extra names, body `["FOX"]` |
+| `DELETE /channel-map/{major}.{minor}` | Remove a channel's extra names |
+| `GET /logs?lines=N| `GET /guide.xml` | Guide as XMLTV |file=F` | Tail of a log file as plain text (default: newest file, 200 lines) |
+| `GET /logs/files` | Log files, newest first |
 | `GET /discover.json` | HDHomeRun device info (`DeviceID`, `TunerCount`, `LineupURL`) |
 | `GET /lineup.json` | HDHomeRun lineup (`GuideNumber`, `GuideName`, `URL`) |
 | `GET /lineup_status.json` | HDHomeRun scan status (`ScanInProgress`, `Progress`, `Found`) |
@@ -217,7 +224,7 @@ To watch in VLC, open `http://<host>:5249/lineup.m3u` as a network stream. VLC t
 
 Each stream carries only the one program, not the whole RF multiplex. The server rewrites the program list (PAT) to include just this channel and passes through the channel's PMT, audio, video and timing (PCR) streams. Other subchannels, PSIP and null packets are dropped. If the program isn't in the multiplex within 5 seconds, for example because the station renumbered, the stream returns 503 and you should run a new channel scan.
 
-The same `major.minor` can be received on several RF channels, for example from a translator or a neighbouring market. A scan keeps every copy in RF order, as `Index` 0, 1 and so on in `channels.json`. The lineups (`lineup.json`, `lineup.m3u`, `guide.xml`) list only the primary (index 0), because clients need each channel number to be unique. Alternates are reachable at `/stream/{major}.{minor}/{index}`.
+The same `major.minor` can be received on several RF channels, for example from a translator or a neighbouring market. A scan keeps every copy and records each one's signal (`SignalSnrDb`, `SignalStrengthPercent`). It ranks copies by SNR, then strength, then RF, and stores the rank as `Index` 0, 1 and so on in `channels.json`. So `/stream/{major}.{minor}` (index 0) is the best connection at the time of the scan. The lineups (`lineup.json`, `lineup.m3u`, `guide.xml`) list only the primary (index 0), because clients need each channel number to be unique. Alternates are reachable at `/stream/{major}.{minor}/{index}`.
 
 ### Guide (EPG)
 
@@ -240,3 +247,48 @@ curl http://localhost:5249/guide.xml
 XMLTV channel ids are the `major.minor` numbers, matching `GuideNumber` in `lineup.json` and `tvg-id` in the M3U. In Jellyfin, add `http://<host>:5249/guide.xml` under Live TV → TV Guide Data Providers → XMLTV. In Plex, choose the XMLTV guide option during DVR setup and give it the same URL.
 
 Limitation: titles or descriptions sent with ATSC Huffman compression (A/65 Annex C) are skipped for now. That's rare for US broadcast TV.
+
+### Channel map
+
+A channel map adds extra `display-name`s to a channel in `guide.xml`. For example, 13.1 broadcasts as `WTVT-DT`, and mapping it to `FOX` lets Jellyfin or Plex match the channel to its network's guide listing. Set a mapping over the API:
+
+```bash
+curl -X PUT -H "Content-Type: application/json" -d '["FOX"]' http://localhost:5249/channel-map/13.1
+```
+
+Or edit `{StorageDirectory}/channel-map.json` directly. It accepts comments, trailing commas and any property-name casing. Changes are picked up on the next request, with no restart needed.
+
+```json
+[
+  { "Channel": "13.1", "DisplayNames": [ "FOX" ] },
+  { "Channel": "8.1",  "DisplayNames": [ "NBC" ] }
+]
+```
+
+### Logs
+
+Besides the console (journald under systemd), logs are written to daily files, `{StorageDirectory}/logs/lintv-YYYYMMDD.log`. Files older than `LogRetentionDays` are deleted. Read them over HTTP:
+
+```bash
+curl "http://localhost:5249/logs?lines=500"
+curl "http://localhost:5249/logs?lines=500" | grep -E "WRN|ERR"
+```
+
+Levels come from the normal `Logging` section. `"LinTv": "Trace"` shows tuner and stream internals. To give the file its own levels, which is useful to keep the console quieter under systemd, use `Logging:File`:
+
+```json
+"Logging": {
+  "LogLevel": { "Default": "Information", "Microsoft.AspNetCore": "Warning", "LinTv": "Information" },
+  "File":     { "LogLevel": { "LinTv": "Trace" } }
+}
+```
+
+Log lines worth knowing when the tuner misbehaves:
+
+| Message | Meaning |
+|---|---|
+| `No data from dvr0 for Ns -- tuner stalled or signal lost?` | A stream is open but no packets are arriving. The message includes the current lock and SNR readings. |
+| `Waited Ns for tuner gate` | Something held the tuner lock for a long time, such as a slow tune or a stuck caller. |
+| `Tuner released with no holders` | A release without a matching acquire (a bug). The holder count is reset to 0. |
+| `No lock after N ms (strength, SNR)` | Tuning failed. Strength and SNR show whether there was any signal at all. |
+| `Stream X for client <outcome> after Ns (MB, Mbps)` | One line per stream when it ends: client disconnected, program not found, or failed. |

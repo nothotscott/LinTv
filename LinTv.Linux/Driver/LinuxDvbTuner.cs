@@ -1,7 +1,9 @@
 ﻿using LinTv.Core.Configuration;
 using LinTv.Core.Domain;
 using LinTv.Core.Driver;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Diagnostics;
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
@@ -63,11 +65,18 @@ namespace LinTv.Linux.Driver
         private readonly Lock _frontendLock = new();
         private int _frontendFd = -1;
 
+        /// A healthy locked multiplex delivers ~2.4 MB/s, so a gap this long means the tuner or
+        /// signal has stalled. The dvr0 read blocks rather than failing, so it'd otherwise be silent.
+        private static readonly TimeSpan StallWarningInterval = TimeSpan.FromSeconds(5);
+
         public int Adapter { get; init; }
 
-        public LinuxDvbTuner(int adapter)
+        public ILogger Logger { private get; set; }
+
+        public LinuxDvbTuner(int adapter, ILogger<LinuxDvbTuner> logger)
         {
             Adapter = adapter;
+            Logger = logger;
         }
 
         [DllImport("libc", SetLastError = true)] private static extern int open(string path, int flags);
@@ -93,6 +102,7 @@ namespace LinTv.Linux.Driver
             props[5] = new DtvProperty { Cmd = DTV_TUNE };
             var request = new DtvProperties { Num = 6, Props = props };
 
+            Logger.LogDebug("Tuning {FrequencyHz} Hz (ATSC 8VSB)", frequencyHz);
             lock (_frontendLock)
             {
                 int rc;
@@ -126,19 +136,31 @@ namespace LinTv.Linux.Driver
                 throw new IOException($"Unable to open {path}: {Marshal.GetLastPInvokeErrorMessage()}{hint}");
             }
 
+            Logger.LogDebug("Opened {Path} (fd {Fd})", path, fd);
             return _frontendFd = fd;
         }
 
+        /// Returns as soon as the frontend locks. On timeout, returns the last reading (unlocked),
+        /// whose strength/SNR show whether there was any signal at all.
         public async Task<SignalStatus> WaitForLockAsync(TimeSpan timeout, CancellationToken ct)
         {
-            var deadline = DateTime.UtcNow + timeout;
-            while (DateTime.UtcNow < deadline)
+            var elapsed = Stopwatch.StartNew();
+            var status = new SignalStatus(false, 0, 0);
+            while (elapsed.Elapsed < timeout)
             {
-                var status = ReadFrontendStatus(); // ioctl(FE_READ_STATUS) + DTV_STAT_* properties
-                if (status.Locked) return status;
+                status = ReadSignalStatus();
+                if (status.Locked)
+                {
+                    Logger.LogDebug("Lock after {ElapsedMs} ms (strength {Strength:F0}%, SNR {Snr:F1} dB)",
+                        elapsed.ElapsedMilliseconds, status.StrengthPercent, status.SnrDb);
+                    return status;
+                }
                 await Task.Delay(100, ct);
             }
-            return new SignalStatus(false, 0, 0);
+
+            Logger.LogDebug("No lock after {ElapsedMs} ms (strength {Strength:F0}%, SNR {Snr:F1} dB)",
+                elapsed.ElapsedMilliseconds, status.StrengthPercent, status.SnrDb);
+            return status;
         }
 
         public async IAsyncEnumerable<ReadOnlyMemory<byte>> ReadTransportStreamAsync(
@@ -147,6 +169,12 @@ namespace LinTv.Linux.Driver
             // The filter lives as long as the demux fd, so hold it open for the whole stream.
             // With it set, dvr0 is a plain byte stream of TS packets.
             int demuxFd = OpenPassThroughFilter(AllPids);
+            var progress = new ReadProgress();
+            var elapsed = Stopwatch.StartNew();
+            Logger.LogDebug("TS read started (demux fd {Fd})", demuxFd);
+
+            // Fires on a timer thread, so it still reports while ReadAsync is blocked in the kernel.
+            using var watchdog = new Timer(_ => WarnIfStalled(progress), null, StallWarningInterval, StallWarningInterval);
             try
             {
                 // bufferSize 0: read straight into our buffer, no FileStream double-buffering.
@@ -165,20 +193,49 @@ namespace LinTv.Linux.Driver
                     {
                         // The kernel ring buffer overran because we read too slowly. Packets
                         // were dropped, but the stream carries on.
+                        progress.Overflows++;
+                        Logger.LogTrace("dvr0 overflow #{Count}: packets dropped", progress.Overflows);
                         continue;
                     }
 
-                    if (read == 0) yield break;
+                    if (read == 0)
+                    {
+                        Logger.LogWarning("dvr0 returned end-of-stream");
+                        yield break;
+                    }
+
+                    progress.Bytes += read;
+                    Volatile.Write(ref progress.LastDataTicks, Environment.TickCount64);
                     yield return buffer.AsMemory(0, read).ToArray(); // copy: consumers outlive the buffer
                 }
             }
             finally
             {
                 close(demuxFd);
+                Logger.LogDebug("TS read stopped after {Seconds:F1}s: {MegaBytes:F1} MB, {Overflows} overflows",
+                    elapsed.Elapsed.TotalSeconds, progress.Bytes / 1_000_000.0, progress.Overflows);
             }
         }
 
-        private unsafe SignalStatus ReadFrontendStatus()
+        private void WarnIfStalled(ReadProgress progress)
+        {
+            var idle = TimeSpan.FromMilliseconds(Environment.TickCount64 - Volatile.Read(ref progress.LastDataTicks));
+            if (idle < StallWarningInterval) return;
+
+            var signal = ReadSignalStatus();
+            Logger.LogWarning(
+                "No data from dvr0 for {Seconds:F0}s -- tuner stalled or signal lost? (locked {Locked}, strength {Strength:F0}%, SNR {Snr:F1} dB)",
+                idle.TotalSeconds, signal.Locked, signal.StrengthPercent, signal.SnrDb);
+        }
+
+        private sealed class ReadProgress
+        {
+            public long LastDataTicks = Environment.TickCount64;
+            public long Bytes;
+            public int Overflows;
+        }
+
+        public unsafe SignalStatus ReadSignalStatus()
         {
             lock (_frontendLock)
             {

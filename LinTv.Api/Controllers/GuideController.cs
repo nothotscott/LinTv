@@ -11,15 +11,19 @@ namespace LinTv.Api.Controllers
 
         public IGuideStore GuideStore { private get; init; }
 
+        public IChannelMapStore ChannelMapStore { private get; init; }
+
         public IXmlTvWriter XmlTvWriter { private get; init; }
 
         public GuideController(
             IChannelStore channelStore,
             IGuideStore guideStore,
+            IChannelMapStore channelMapStore,
             IXmlTvWriter xmlTvWriter)
         {
             ChannelStore = channelStore;
             GuideStore = guideStore;
+            ChannelMapStore = channelMapStore;
             XmlTvWriter = xmlTvWriter;
         }
 
@@ -29,7 +33,8 @@ namespace LinTv.Api.Controllers
         {
             var channels = await ChannelStore.GetAllAsync();
             var events = await GuideStore.GetAllAsync();
-            return Content(XmlTvWriter.Write(channels, events), "application/xml; charset=utf-8");
+            var mappings = await ChannelMapStore.GetAllAsync();
+            return Content(XmlTvWriter.Write(channels, events, mappings), "application/xml; charset=utf-8");
         }
     }
 }

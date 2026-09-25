@@ -22,6 +22,9 @@ namespace LinTv.Core.Configuration
         /// Far-future EITs and ETTs repeat slowly (up to a minute or more).
         public int EpgScanTimeoutSeconds { get; set; } = 60;
 
+        /// Daily log files in {StorageDirectory}/logs older than this are deleted.
+        public int LogRetentionDays { get; set; } = 7;
+
         /// Name Plex/Jellyfin show for the tuner.
         public string FriendlyName { get; set; } = "LinTv";
 

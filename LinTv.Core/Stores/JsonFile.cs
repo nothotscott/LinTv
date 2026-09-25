@@ -5,7 +5,14 @@ namespace LinTv.Core.Stores
     /// Shared persistence for the JSON stores.
     internal static class JsonFile
     {
-        private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
+        // Lenient reading because some files (channel-map.json) are edited by hand.
+        private static readonly JsonSerializerOptions Options = new()
+        {
+            WriteIndented = true,
+            PropertyNameCaseInsensitive = true,
+            ReadCommentHandling = JsonCommentHandling.Skip,
+            AllowTrailingCommas = true
+        };
 
         public static async Task<T?> ReadAsync<T>(string path)
         {

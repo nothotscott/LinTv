@@ -5,6 +5,7 @@ using LinTv.Core.Configuration;
 using LinTv.Core.Driver;
 using LinTv.Core.Stores;
 using LinTv.Core.Writers;
+using LinTv.Core.Logging;
 
 // Resolve appsettings.json next to the binary, not the caller's working directory,
 // so `dotnet /opt/lintv/LinTv.Api.dll` works from anywhere.
@@ -22,13 +23,21 @@ builder.Services.AddOptions<LinTvConfiguration>()
     .BindConfiguration(LinTvConfiguration.SectionName);
 builder.Services.AddSingleton<ITunerArbiterService, TunerArbiterService>();
 builder.Services.AddSingleton<IDvbTuner, LinuxDvbTuner>((sp) =>
-    new LinuxDvbTuner(sp.GetRequiredService<IOptions<LinTvConfiguration>>().Value.Adapter));
+    new LinuxDvbTuner(
+        sp.GetRequiredService<IOptions<LinTvConfiguration>>().Value.Adapter,
+        sp.GetRequiredService<ILogger<LinuxDvbTuner>>()));
 builder.Services.AddSingleton<IChannelStore, JsonChannelStore>();
 builder.Services.AddSingleton<IGuideStore, JsonGuideStore>();
+builder.Services.AddSingleton<IChannelMapStore, JsonChannelMapStore>();
 builder.Services.AddSingleton<IChannelScanner, ChannelScanner>();
 builder.Services.AddSingleton<IM3uWriter, M3uWriter>();
 builder.Services.AddSingleton<IEpgScanner, EpgScanner>();
 builder.Services.AddSingleton<IXmlTvWriter, XmlTvWriter>();
+
+// File log sink: registering the provider in DI makes the logging framework pick it up.
+builder.Services.AddSingleton<FileLoggerProvider>();
+builder.Services.AddSingleton<ILoggerProvider>(sp => sp.GetRequiredService<FileLoggerProvider>());
+builder.Services.AddSingleton<ILogStore>(sp => sp.GetRequiredService<FileLoggerProvider>());
 
 var app = builder.Build();
 

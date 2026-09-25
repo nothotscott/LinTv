@@ -39,6 +39,9 @@ namespace LinTv.Api.Controllers
 
               <h2>Guide</h2>
               <p><a href="/guide.xml">guide.xml</a></p>
+
+              <h2>Diagnostics</h2>
+              <p><a href="/logs?lines=500">Recent log</a> · <a href="/logs/files">Log files</a></p>
             </body>
             </html>
             """;
