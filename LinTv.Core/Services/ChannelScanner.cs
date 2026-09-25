@@ -66,7 +66,7 @@ namespace LinTv.Core.Services
         private async Task<IReadOnlyList<VirtualChannel>> RunAsync(CancellationToken ct)
         {
             var plan = AtscChannelPlan.UsBroadcast;
-            var found = new Dictionary<string, VirtualChannel>();
+            var found = new List<VirtualChannel>();
 
             try
             {
@@ -76,17 +76,20 @@ namespace LinTv.Core.Services
                 {
                     foreach (var channel in await ScanRfChannelAsync(plan[i], ct))
                     {
-                        // Same virtual channel on two RFs: a translator, or a neighbouring
-                        // market's signal. Keep the first one.
-                        if (!found.TryAdd(channel.Id, channel))
-                            Logger.LogWarning("{Id} also found on RF {Rf}; keeping RF {Kept}",
-                                channel.Id, channel.RfChannel, found[channel.Id].RfChannel);
+                        // Same virtual channel on several RFs (a translator, or a neighbouring
+                        // market's signal): keep them all, numbered in scan order.
+                        int index = found.Count(c => c.Id == channel.Id);
+                        if (index > 0)
+                            Logger.LogInformation("{Id} also found on RF {Rf}; stored as index {Index}",
+                                channel.Id, channel.RfChannel, index);
+
+                        found.Add(channel with { Index = index });
                     }
 
                     _status = _status with { ProgressPercent = (i + 1) * 100 / plan.Count, Found = found.Count };
                 }
 
-                var channels = found.Values.OrderBy(c => c.Major).ThenBy(c => c.Minor).ToList();
+                var channels = found.OrderBy(c => c.Major).ThenBy(c => c.Minor).ThenBy(c => c.Index).ToList();
 
                 // Don't wipe a good lineup because the antenna was unplugged.
                 if (channels.Count > 0)

@@ -30,10 +30,10 @@ namespace LinTv.Core.Stores
             }
         }
 
-        public async Task<VirtualChannel?> FindAsync(int major, int minor)
+        public async Task<VirtualChannel?> FindAsync(int major, int minor, int index = 0)
         {
             var channels = await GetAllAsync();
-            return channels.FirstOrDefault(c => c.Major == major && c.Minor == minor);
+            return channels.FirstOrDefault(c => c.Major == major && c.Minor == minor && c.Index == index);
         }
 
         public async Task ReplaceAllAsync(IReadOnlyList<VirtualChannel> channels)

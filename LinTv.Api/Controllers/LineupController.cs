@@ -39,7 +39,9 @@ namespace LinTv.Api.Controllers
         public async Task<IActionResult> Lineup()
         {
             var channels = await ChannelStore.GetAllAsync();
+            // Primaries only: clients key channels on GuideNumber, so it must be unique.
             var lineup = channels
+                .Where(c => c.IsPrimary)
                 .OrderBy(c => c.Major).ThenBy(c => c.Minor)
                 .Select(c => new HdHomeRunLineupEntry(c.Id, c.ShortName, ChannelUrls.Stream(BaseUrl, c)));
             return new JsonResult(lineup, HdHomeRunJson.Options);

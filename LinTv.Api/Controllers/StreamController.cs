@@ -1,14 +1,19 @@
 using LinTv.Core.Domain;
 using LinTv.Core.Driver;
+using LinTv.Core.Mpeg;
 using LinTv.Core.Services;
 using LinTv.Core.Stores;
 using Microsoft.AspNetCore.Mvc;
+using System.Buffers;
 
 namespace LinTv.Api.Controllers
 {
     [ApiController]
     public class StreamController : ControllerBase
     {
+        /// PATs repeat every ~100 ms, so a program missing for this long isn't in the multiplex.
+        private static readonly TimeSpan ProgramTimeout = TimeSpan.FromSeconds(5);
+
         public ITunerArbiterService TunerArbiter { private get; init; }
 
         public IChannelStore ChannelStore { private get; init; }
@@ -21,24 +26,23 @@ namespace LinTv.Api.Controllers
             ChannelStore = channelStore;
         }
 
-        /// Stream a virtual channel, e.g. /stream/8.1 (see ChannelUrls). Sends the channel's whole
-        /// RF multiplex for now; VLC picks the subchannel via the #EXTVLCOPT:program line in
-        /// /lineup.m3u, or manually via Playback > Program.
-        [HttpGet("stream/{major:int}.{minor:int}")]
-        public async Task<IActionResult> Stream(int major, int minor, CancellationToken ct)
+        /// Stream a virtual channel as a single-program TS (see ChannelUrls). /stream/10.1 is the
+        /// primary entry; /stream/10.1/1 is the second place 10.1 is received, and so on.
+        [HttpGet("stream/{major:int}.{minor:int}/{index:int?}")]
+        public async Task<IActionResult> Stream(int major, int minor, int? index, CancellationToken ct)
         {
-            var virtualChannel = await ChannelStore.FindAsync(major, minor);
+            var virtualChannel = await ChannelStore.FindAsync(major, minor, index ?? 0);
             if (virtualChannel is null) return NotFound();
 
-            return await StreamMultiplexAsync(virtualChannel.FrequencyHz, ct);
+            return await StreamProgramAsync(virtualChannel, ct);
         }
 
-        private async Task<IActionResult> StreamMultiplexAsync(long frequencyHz, CancellationToken ct)
+        private async Task<IActionResult> StreamProgramAsync(VirtualChannel channel, CancellationToken ct)
         {
             IDvbTuner tuner;
             try
             {
-                tuner = await TunerArbiter.AcquireAsync(frequencyHz, TunerPriority.LiveView, ct);
+                tuner = await TunerArbiter.AcquireAsync(channel.FrequencyHz, TunerPriority.LiveView, ct);
             }
             catch (Exception ex)
             {
@@ -47,11 +51,30 @@ namespace LinTv.Api.Controllers
 
             try
             {
-                // ct is RequestAborted: closing VLC cancels the read loop and releases the demux.
-                Response.ContentType = "video/mp2t";
+                var framer = new TsPacketFramer();
+                var demuxer = new ProgramDemuxer(channel.ProgramNumber);
+                var output = new ArrayBufferWriter<byte>(64 * 1024);
+                var deadline = DateTime.UtcNow + ProgramTimeout;
+
+                // ct is RequestAborted: closing the player cancels the read loop and releases the demux.
                 await foreach (var chunk in tuner.ReadTransportStreamAsync(ct))
                 {
-                    await Response.Body.WriteAsync(chunk, ct);
+                    framer.Push(chunk.Span, packet => demuxer.Process(packet, output));
+
+                    if (!demuxer.ProgramFound)
+                    {
+                        // Nothing has been written yet, so a proper error response is still possible.
+                        if (DateTime.UtcNow > deadline)
+                            return Problem(
+                                $"Program {channel.ProgramNumber} ({channel.Id}) not found on RF {channel.RfChannel}; try a channel scan",
+                                statusCode: StatusCodes.Status503ServiceUnavailable);
+                        continue;
+                    }
+
+                    if (output.WrittenCount == 0) continue;
+                    Response.ContentType = "video/mp2t";
+                    await Response.Body.WriteAsync(output.WrittenMemory, ct);
+                    output.ResetWrittenCount();
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

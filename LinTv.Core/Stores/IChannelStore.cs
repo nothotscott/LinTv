@@ -8,7 +8,8 @@ namespace LinTv.Core.Stores
     public interface IChannelStore
     {
         Task<IReadOnlyList<VirtualChannel>> GetAllAsync();
-        Task<VirtualChannel?> FindAsync(int major, int minor);
+        /// The index-th place major.minor is received (see VirtualChannel.Index); null if none.
+        Task<VirtualChannel?> FindAsync(int major, int minor, int index = 0);
         Task ReplaceAllAsync(IReadOnlyList<VirtualChannel> channels);
     }
 }

@@ -21,7 +21,8 @@ namespace LinTv.Core.Writers
                 xml.WriteStartElement("tv");
                 xml.WriteAttributeString("generator-info-name", "LinTv");
 
-                var ordered = channels.OrderBy(c => c.Major).ThenBy(c => c.Minor).ToList();
+                // Primaries only: an XMLTV channel id must be unique.
+                var ordered = channels.Where(c => c.IsPrimary).OrderBy(c => c.Major).ThenBy(c => c.Minor).ToList();
                 foreach (var c in ordered)
                 {
                     xml.WriteStartElement("channel");

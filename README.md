@@ -195,7 +195,8 @@ Open `http://<host>:5249/` and start a channel scan, or use `curl` (see **Usage*
 | `GET /scan/channels` | Channel scan progress and result |
 | `POST /scan/epg` | Start a guide scan of every multiplex in the lineup |
 | `GET /scan/epg` | Guide scan progress and result |
-| `GET /stream/{major}.{minor}` | Stream a virtual channel as MPEG-TS, e.g. `/stream/8.1` |
+| `GET /stream/{major}.{minor}` | Stream a virtual channel as a single-program MPEG-TS, e.g. `/stream/8.1` |
+| `GET /stream/{major}.{minor}/{index}` | Stream a specific place the channel is received, e.g. `/stream/10.1/1` (index 0 = `/stream/10.1`) |
 | `GET /lineup.m3u` | Scanned channels as an M3U playlist |
 | `GET /guide.xml` | Guide as XMLTV |
 | `GET /discover.json` | HDHomeRun device info (`DeviceID`, `TunerCount`, `LineupURL`) |
@@ -212,7 +213,11 @@ curl http://localhost:5249/scan/channels # poll until "inProgress": false
 curl http://localhost:5249/lineup.json
 ```
 
-To watch in VLC, open `http://<host>:5249/lineup.m3u` as a network stream. VLC then shows the playlist as a list of channels. Streams are currently the whole RF multiplex. The M3U includes a VLC-only `#EXTVLCOPT:program=` line so VLC plays the right subchannel.
+To watch in VLC, open `http://<host>:5249/lineup.m3u` as a network stream. VLC then shows the playlist as a list of channels.
+
+Each stream carries only the one program, not the whole RF multiplex. The server rewrites the program list (PAT) to include just this channel and passes through the channel's PMT, audio, video and timing (PCR) streams. Other subchannels, PSIP and null packets are dropped. If the program isn't in the multiplex within 5 seconds, for example because the station renumbered, the stream returns 503 and you should run a new channel scan.
+
+The same `major.minor` can be received on several RF channels, for example from a translator or a neighbouring market. A scan keeps every copy in RF order, as `Index` 0, 1 and so on in `channels.json`. The lineups (`lineup.json`, `lineup.m3u`, `guide.xml`) list only the primary (index 0), because clients need each channel number to be unique. Alternates are reachable at `/stream/{major}.{minor}/{index}`.
 
 ### Guide (EPG)
 

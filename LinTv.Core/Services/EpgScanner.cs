@@ -75,7 +75,9 @@ namespace LinTv.Core.Services
                 if (channels.Count == 0)
                     throw new InvalidOperationException("The lineup is empty; run a channel scan first");
 
-                var multiplexes = channels.GroupBy(c => c.FrequencyHz).ToList();
+                // Guide data comes from each channel's primary entry; alternates carry the same
+                // programmes, so tuning them too would just double the scan time.
+                var multiplexes = channels.Where(c => c.IsPrimary).GroupBy(c => c.FrequencyHz).ToList();
                 var events = new List<GuideEvent>();
                 Logger.LogInformation("EPG scan started: {Count} multiplexes", multiplexes.Count);
 

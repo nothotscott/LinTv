@@ -13,15 +13,11 @@ namespace LinTv.Core.Writers
             // x-tvg-url points guide-aware players at the XMLTV guide.
             var sb = new StringBuilder($"#EXTM3U x-tvg-url=\"{ChannelUrls.Guide(baseUrl)}\"\n");
 
-            foreach (var c in channels.OrderBy(c => c.Major).ThenBy(c => c.Minor))
+            // Primaries only: tvg-id must be unique for clients to map the guide.
+            foreach (var c in channels.Where(c => c.IsPrimary).OrderBy(c => c.Major).ThenBy(c => c.Minor))
             {
                 var name = c.ShortName.Replace("\"", "'").Replace(",", " ");
                 sb.Append($"#EXTINF:-1 tvg-id=\"{c.Id}\" tvg-chno=\"{c.Id}\" tvg-name=\"{name}\",{c.Id} {name}\n");
-
-                // The stream is the whole RF multiplex until per-program remuxing exists;
-                // this makes VLC pick the right subchannel. Other clients ignore it.
-                sb.Append($"#EXTVLCOPT:program={c.ProgramNumber}\n");
-
                 sb.Append($"{ChannelUrls.Stream(baseUrl, c)}\n");
             }
 
