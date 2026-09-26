@@ -6,6 +6,7 @@ using LinTv.Core.Driver;
 using LinTv.Core.Stores;
 using LinTv.Core.Writers;
 using LinTv.Core.Logging;
+using LinTv.Core.Domain;
 
 // Resolve appsettings.json next to the binary, not the caller's working directory,
 // so `dotnet /opt/lintv/LinTv.Api.dll` works from anywhere.
@@ -20,7 +21,11 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 builder.Services.AddOptions<LinTvConfiguration>()
-    .BindConfiguration(LinTvConfiguration.SectionName);
+    .BindConfiguration(LinTvConfiguration.SectionName)
+    // Fail at startup on a typo like "25pm", rather than silently never scanning.
+    .Validate(c => DailySchedule.TryParse(c.EpgScanTimes, out _, out _),
+        "LinTv:EpgScanTimes must be times of day like \"11am\", \"11:30pm\" or \"23:00\"")
+    .ValidateOnStart();
 builder.Services.AddSingleton<ITunerArbiterService, TunerArbiterService>();
 builder.Services.AddSingleton<IDvbTuner, LinuxDvbTuner>((sp) =>
     new LinuxDvbTuner(
@@ -34,6 +39,7 @@ builder.Services.AddSingleton<IM3uWriter, M3uWriter>();
 builder.Services.AddSingleton<IEpgScanner, EpgScanner>();
 builder.Services.AddSingleton<IXmlTvWriter, XmlTvWriter>();
 builder.Services.AddSingleton<IHdHomeRunLineupService, HdHomeRunLineupService>();
+builder.Services.AddHostedService<EpgScheduleService>();
 
 // File log sink: registering the provider in DI makes the logging framework pick it up.
 builder.Services.AddSingleton<FileLoggerProvider>();

@@ -22,6 +22,10 @@ namespace LinTv.Core.Configuration
         /// Far-future EITs and ETTs repeat slowly (up to a minute or more).
         public int EpgScanTimeoutSeconds { get; set; } = 60;
 
+        /// Local times of day to run an EPG scan, e.g. ["11am", "11pm"]; empty disables it.
+        /// Parsed by DailySchedule and validated at startup.
+        public string[] EpgScanTimes { get; set; } = [];
+
         /// Daily log files in {StorageDirectory}/logs older than this are deleted.
         public int LogRetentionDays { get; set; } = 7;
 

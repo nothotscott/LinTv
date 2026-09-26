@@ -103,11 +103,19 @@ The same `major.minor` can be received on several RFs, such as a translator or a
 - **Text:** titles and descriptions are ATSC *multiple string structures*. English is preferred. Huffman-compressed strings (A/65 Annex C) aren't decoded yet and are skipped.
 - **Merging into `guide.json`:** per channel, new events replace stored events that start inside the window the new events cover. This handles reschedules and cancellations. Events that ended more than 6 h ago are pruned.
 
+### Scheduled scans (`EpgScheduleService`)
+
+`EpgScanTimes` (e.g. `["11am", "11pm"]`) is parsed by `DailySchedule` and validated at startup. `ValidateOnStart` means a typo stops the app rather than silently never scanning.
+
+- **Runner:** a hosted `BackgroundService` sleeps until the next time, in the server's local zone, then calls `EpgScanner.TryStartScan`. It does nothing if the list is empty.
+- **Clock changes:** it sleeps in slices of at most 1 h, so DST changes or clock corrections can't delay a run by hours. A time that doesn't exist on a spring-forward day runs an hour later.
+- **Skipped runs:** a run is skipped with a log line if a scan is already going or the lineup is empty. A multiplex whose tuner is busy (someone watching another frequency) is skipped by the scanner itself, and gets picked up at the next scheduled time.
+
 ## Client-facing formats
 
 | Endpoint | Format notes |
 |---|---|
-| `discover.json`, `lineup.json`, `lineup_status.json` | HDHomeRun's exact **PascalCase** keys (`HdHomeRunJson.Options`), because clients match names exactly. `discover.json` claims model `HDHR5-2US` with `TunerCount` 1. `DeviceID` must stay stable, because clients key the device on it. |
+| `discover.json`, `lineup.json`, `lineup_status.json` | HDHomeRun's exact **PascalCase** keys (`HdHomeRunJson.Options`), because clients match names exactly. `discover.json` claims model `HDHR5-2US` with `TunerCount` 1. `DeviceID` must stay stable, because clients key the device on it. `lineup.json` is built by `HdHomeRunLineupService`: `GuideName` is the channel map's **first** name if there is one, otherwise the broadcast short name. That's what Jellyfin's HDHomeRun tuner displays and matches on; it doesn't use XMLTV display-names for that. |
 | `lineup.m3u` | Extended M3U with `tvg-id` = `major.minor`, and `x-tvg-url` pointing at `guide.xml`. |
 | `guide.xml` | XMLTV. Channel id = `major.minor`. Display names are `"13.1 WTVT-DT"`, `"WTVT-DT"`, `"13.1"`, then any channel-map names (e.g. `"FOX"`). |
 
@@ -142,7 +150,6 @@ There's no test project yet. The MPEG/PSIP code has been verified with throwaway
 
 ## Known limitations / next steps
 
-- **Guide refresh:** the EPG only updates on demand. Scheduled refresh is the next step.
 - **No preemption:** a live stream can't take the tuner from a scan.
 - **Huffman text:** Huffman-compressed PSIP text is skipped.
 - **Stuck reads:** if a tuner stops delivering data mid-stream, the blocking `dvr0` read can't be cancelled until data arrives. The watchdog makes this visible, but it doesn't recover it.

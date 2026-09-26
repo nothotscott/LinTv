@@ -11,7 +11,7 @@ LinTv is an HDHomeRun-compatible network tuner. It runs as an ASP.NET Core servi
 |---|---|
 | `LinTv.Core` | All platform-independent logic: `Domain/` records, `Services/` (arbiter, scanners), `Stores/` (JSON persistence), `Writers/` (M3U, XMLTV, `ChannelUrls`), `Mpeg/` (TS framing, PSI/PSIP parsing, `ProgramDemuxer`), `Logging/` (file sink) |
 | `LinTv.Linux` | `LinuxDvbTuner` only: P/Invoke `open`/`ioctl`/`close` on `/dev/dvb`. `AllowUnsafeBlocks` is on. |
-| `LinTv.Api` | Host, DI wiring (`Program.cs`) and thin attribute-routed controllers. `HdHomeRun/` holds the PascalCase DTOs. |
+| `LinTv.Api` | Host, DI wiring (`Program.cs`, including options validation and hosted services) and thin attribute-routed controllers. HDHomeRun DTOs and `HdHomeRunJson` live in Core (`Domain/HdHomeRunModels.cs`), and `lineup.json` is built by `Services/HdHomeRunLineupService`. |
 
 The dev machine is Windows. The deploy target is Linux x64.
 
@@ -48,6 +48,8 @@ $env:LinTv__StorageDirectory = "$env:TEMP\lintv"; dotnet run --project LinTv.Api
 - **Response headers:** set them (e.g. `Content-Type`) **before** the first `Response.Body` write. After that they're read-only and the next write throws.
 - **Unique ids for clients:** `lineup.json`, `lineup.m3u`, `guide.xml` and the EPG scan use **primaries only** (`VirtualChannel.IsPrimary`, i.e. `Index == 0`). Clients need `GuideNumber` / `tvg-id` / XMLTV ids to be unique. Alternates are reachable only at `/stream/{major}.{minor}/{index}`.
 - **HDHomeRun JSON:** use `HdHomeRunJson.Options` (PascalCase, nulls omitted) for anything HDHomeRun-shaped. Clients match key names exactly.
+- **The channel map drives Jellyfin's naming:** the first `DisplayNames` entry becomes `GuideName` in `lineup.json`. Jellyfin's HDHomeRun tuner shows and matches channels by that name, not by XMLTV display-names, so name order in `channel-map.json` matters.
+- **Scheduled work:** it goes in a `BackgroundService` registered with `AddHostedService`. Scheduled scans go through the scanner's `TryStartScan`, so they share its "already running" guard.
 - **`DeviceId` must never change by default:** clients key the device, and the user's channel setup, on it.
 - **Keep URLs in sync:** stream and guide URLs come from `ChannelUrls`. Change it together with the `StreamController` / `GuideController` routes.
 - **Content root:** it's `AppContext.BaseDirectory` (in `Program.cs`), so `appsettings.json` is found no matter where `dotnet` is started. Don't remove this.

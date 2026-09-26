@@ -10,7 +10,8 @@ LinTv presents itself as an [HDHomeRun](https://www.silicondust.com/), the netwo
 - **Live TV:** streams each channel over HTTP as a standard MPEG-TS, containing just that channel.
 - **Program guide:** reads the guide data stations broadcast over the air and serves it as XMLTV, with no internet guide service needed.
 - **HDHomeRun emulation:** serves `discover.json`, `lineup.json` and `lineup_status.json`, so Plex and Jellyfin can add it as a tuner.
-- **Channel map:** attach network names (e.g. `FOX`) to local call signs to make guide matching easier.
+- **Channel map:** attach network names (e.g. `FOX`) to local call signs, so media servers show and match channels by network.
+- **Scheduled guide refresh:** rescans the guide at the times of day you choose.
 - **Diagnostics:** keeps daily log files you can read over HTTP.
 
 For how it works inside (tuner sharing, PSIP parsing, demuxing), see [docs/ABOUT.md](docs/ABOUT.md).
@@ -146,6 +147,7 @@ Settings live in the `LinTv` section of `/opt/lintv/appsettings.json`:
   "LockWaitSeconds": 5,
   "ChannelScanTimeoutSeconds": 5,
   "EpgScanTimeoutSeconds": 60,
+  "EpgScanTimes": ["11am", "11pm"],
   "LogRetentionDays": 7,
   "FriendlyName": "LinTv",
   "DeviceId": "4C696E54"
@@ -160,6 +162,7 @@ Settings live in the `LinTv` section of `/opt/lintv/appsettings.json`:
 | `LockWaitSeconds` | How long to wait for a signal lock before treating an RF channel as empty. |
 | `ChannelScanTimeoutSeconds` | How long a scan waits for a locked channel's channel table. |
 | `EpgScanTimeoutSeconds` | The most time a guide scan spends per frequency. If it runs out, it keeps what it has collected, usually the next several hours. |
+| `EpgScanTimes` | When to rescan the guide automatically, in the server's local time, e.g. `["11am", "11pm"]`. Also accepts `"11:30pm"` or `"23:00"`. `[]` (the default) turns it off. An invalid entry stops LinTv at startup with an error. |
 | `LogRetentionDays` | Days of log files to keep. |
 | `FriendlyName` | The name Plex and Jellyfin show. |
 | `DeviceId` | 8 hex digits identifying the tuner to clients. **Keep it stable**: changing it makes clients see a new device and lose their channel setup. |
@@ -198,7 +201,7 @@ journalctl -u lintv -f
 ## Getting started
 
 1. **Scan for channels.** Open `http://<host>:5249/` and click **Start channel scan**. A full scan takes a few minutes. Watch progress at `/scan/channels`, or with `curl http://<host>:5249/scan/channels`.
-2. **Scan the guide.** On the same page, click **Start EPG scan**. It takes up to `EpgScanTimeoutSeconds` per frequency.
+2. **Scan the guide.** On the same page, click **Start EPG scan**. It takes up to `EpgScanTimeoutSeconds` per frequency. Stations only broadcast the next half day to a few days of guide data, so set `EpgScanTimes` to keep it fresh. Twice a day is plenty.
 3. **Watch something.** Open `http://<host>:5249/lineup.m3u` in VLC (Media → Open Network Stream) to get a channel list.
 4. **Add it to your media server:**
    - **Jellyfin:** Dashboard → Live TV → Tuner Devices → Add → HDHomeRun, `http://<host>:5249`. Then go to TV Guide Data Providers → Add → XMLTV, `http://<host>:5249/guide.xml`.
@@ -206,11 +209,16 @@ journalctl -u lintv -f
 
    Clients won't find LinTv on their own yet, so enter the address by hand.
 
-Rerun the channel scan if stations change frequency or number. A stream that returns 503 with "not found … try a channel scan" is the sign. Rerun the EPG scan to refresh the guide.
+Rerun the channel scan if stations change frequency or number. A stream that returns 503 with "not found … try a channel scan" is the sign. The guide refreshes on the `EpgScanTimes` schedule. You can also start an EPG scan by hand at any time.
 
 ## Channel map
 
-Stations broadcast their call sign (`WTVT-DT`), but you may want the network (`FOX`) in the guide, for example to match channels in Jellyfin. A channel map adds extra names to the guide:
+Stations broadcast their call sign (`WTVT-DT`), but media servers match channels to guide listings and logos more reliably by network (`FOX`). A channel map gives a channel extra names, used in two places:
+
+- **`lineup.json`** (the HDHomeRun tuner in Jellyfin and Plex): the **first** name replaces the call sign as the channel's `GuideName`. This is the name Jellyfin's HDHomeRun tuner shows and matches on.
+- **`guide.xml`**: every name is added as an extra `<display-name>`, after the call-sign names.
+
+So put the name you want clients to show first.
 
 ```bash
 curl -X PUT -H "Content-Type: application/json" -d '["FOX"]' http://<host>:5249/channel-map/13.1
@@ -225,7 +233,7 @@ Or edit `/var/lib/lintv/channel-map.json` directly. Changes apply on the next re
 ]
 ```
 
-To have an AI assistant draft the map for your area, give it [docs/LLM-Channel-Map-Instructions.md](docs/LLM-Channel-Map-Instructions.md) along with your `lineup.json`.
+To have an AI assistant draft the map for your area, give it [docs/LLM-Channel-Map-Instructions.md](docs/LLM-Channel-Map-Instructions.md) along with your `/var/lib/lintv/channels.json` (the scan result; `lineup.json` already has the map merged in, so it isn't a good starting point).
 
 ## Endpoints
 
