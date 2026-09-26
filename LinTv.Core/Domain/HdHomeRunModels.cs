@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace LinTv.Api.HdHomeRun
+namespace LinTv.Core.Domain
 {
     /// HDHomeRun's HTTP API uses PascalCase keys and 0/1 for booleans; clients such as
     /// Plex and Jellyfin match on exact names, so these bypass ASP.NET's camelCase default.

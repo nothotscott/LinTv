@@ -1,4 +1,4 @@
-using LinTv.Api.HdHomeRun;
+using LinTv.Core.Domain;
 using LinTv.Core.Configuration;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;

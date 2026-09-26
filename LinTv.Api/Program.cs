@@ -33,6 +33,7 @@ builder.Services.AddSingleton<IChannelScanner, ChannelScanner>();
 builder.Services.AddSingleton<IM3uWriter, M3uWriter>();
 builder.Services.AddSingleton<IEpgScanner, EpgScanner>();
 builder.Services.AddSingleton<IXmlTvWriter, XmlTvWriter>();
+builder.Services.AddSingleton<IHdHomeRunLineupService, HdHomeRunLineupService>();
 
 // File log sink: registering the provider in DI makes the logging framework pick it up.
 builder.Services.AddSingleton<FileLoggerProvider>();

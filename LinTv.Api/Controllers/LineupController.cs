@@ -1,4 +1,4 @@
-using LinTv.Api.HdHomeRun;
+using LinTv.Core.Domain;
 using LinTv.Core.Services;
 using LinTv.Core.Stores;
 using LinTv.Core.Writers;
@@ -13,16 +13,16 @@ namespace LinTv.Api.Controllers
 
         public IM3uWriter M3uWriter { private get; init; }
 
-        public IChannelScanner ChannelScanner { private get; init; }
+        public IHdHomeRunLineupService HdHomeRunLineupService { private get; init; }
 
         public LineupController(
             IChannelStore channelStore,
             IM3uWriter m3uWriter,
-            IChannelScanner channelScanner)
+            IHdHomeRunLineupService hdHomeRunLineupService)
         {
             ChannelStore = channelStore;
             M3uWriter = m3uWriter;
-            ChannelScanner = channelScanner;
+            HdHomeRunLineupService = hdHomeRunLineupService;
         }
 
         private string BaseUrl => $"{Request.Scheme}://{Request.Host}";
@@ -38,23 +38,13 @@ namespace LinTv.Api.Controllers
         [HttpGet("lineup.json")]
         public async Task<IActionResult> Lineup()
         {
-            var channels = await ChannelStore.GetAllAsync();
-            // Primaries only: clients key channels on GuideNumber, so it must be unique.
-            var lineup = channels
-                .Where(c => c.IsPrimary)
-                .OrderBy(c => c.Major).ThenBy(c => c.Minor)
-                .Select(c => new HdHomeRunLineupEntry(c.Id, c.ShortName, ChannelUrls.Stream(BaseUrl, c)));
-            return new JsonResult(lineup, HdHomeRunJson.Options);
+            return new JsonResult(await HdHomeRunLineupService.GetLineupAsync(BaseUrl), HdHomeRunJson.Options);
         }
 
         [HttpGet("lineup_status.json")]
-        public IActionResult LineupStatus()
+        public async Task<IActionResult> LineupStatus()
         {
-            var scan = ChannelScanner.Status;
-            var status = scan.InProgress
-                ? new HdHomeRunLineupStatus(1, Progress: scan.ProgressPercent, Found: scan.Found)
-                : new HdHomeRunLineupStatus(0, ScanPossible: 1, Source: "Antenna", SourceList: ["Antenna"]);
-            return new JsonResult(status, HdHomeRunJson.Options);
+            return new JsonResult(await HdHomeRunLineupService.LineupStatusAsync(), HdHomeRunJson.Options);
         }
     }
 }

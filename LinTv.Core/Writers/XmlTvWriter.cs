@@ -34,13 +34,14 @@ namespace LinTv.Core.Writers
                     xml.WriteAttributeString("id", c.Id);
                     // Several display-names help clients auto-match by name or by number; mapped
                     // names (e.g. the network, "FOX") come last.
-                    var names = new[] { $"{c.Id} {c.ShortName}", c.ShortName, c.Id }
-                        .Concat(extraNames.GetValueOrDefault(c.Id) ?? [])
+                    var names = ChannelNames(c, extraNames.GetValueOrDefault(c.Id))
                         .Select(Clean)
                         .Where(n => !string.IsNullOrWhiteSpace(n))
                         .Distinct(StringComparer.OrdinalIgnoreCase);
                     foreach (var name in names)
+                    {
                         xml.WriteElementString("display-name", name);
+                    }
                     xml.WriteEndElement();
                 }
 
@@ -73,6 +74,20 @@ namespace LinTv.Core.Writers
             }
 
             return Encoding.UTF8.GetString(buffer.ToArray());
+        }
+
+        private static IList<string> ChannelNames(VirtualChannel channel, IEnumerable<string>? extraNames = default)
+        {
+            var nameList = new List<string>();
+            nameList.Add($"{channel.Id} {channel.ShortName}");
+            nameList.Add(channel.ShortName);
+            nameList.Add(channel.Id);
+            if (extraNames is not null && extraNames.Any())
+            {
+                nameList.AddRange(extraNames);
+            }
+
+            return nameList;
         }
 
         private static string XmlTvTime(DateTimeOffset time) =>
