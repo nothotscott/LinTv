@@ -148,6 +148,8 @@ Settings live in the `LinTv` section of `/opt/lintv/appsettings.json`:
   "ChannelScanTimeoutSeconds": 5,
   "EpgScanTimeoutSeconds": 60,
   "EpgScanTimes": ["11am", "11pm"],
+  "StreamStallTimeoutSeconds": 15,
+  "TunerCount": 1,
   "LogRetentionDays": 7,
   "FriendlyName": "LinTv",
   "DeviceId": "4C696E54"
@@ -163,6 +165,7 @@ Settings live in the `LinTv` section of `/opt/lintv/appsettings.json`:
 | `ChannelScanTimeoutSeconds` | How long a scan waits for a locked channel's channel table. |
 | `EpgScanTimeoutSeconds` | The most time a guide scan spends per frequency. If it runs out, it keeps what it has collected, usually the next several hours. |
 | `EpgScanTimes` | When to rescan the guide automatically, in the server's local time, e.g. `["11am", "11pm"]`. Also accepts `"11:30pm"` or `"23:00"`. `[]` (the default) turns it off. An invalid entry stops LinTv at startup with an error. |
+| `TunerCount` | Tuners reported to Plex and Jellyfin, which cap how many streams they open at this. Default 1. Several streams can play at once only if they're on the same RF channel (e.g. 8.1 and 8.2). Raise this if most of your viewing is on one RF channel. A stream on a different RF channel than one already playing is still refused. |
 | `StreamStallTimeoutSeconds` | A stream that has sent nothing for this long (signal lost, or a client that never fully connected) is ended and the tuner released. Default 15. |
 | `LogRetentionDays` | Days of log files to keep. |
 | `FriendlyName` | The name Plex and Jellyfin show. |
@@ -300,7 +303,7 @@ Messages worth knowing:
 - **A station is hard to lock or keeps breaking up:** check it with `curl "http://<host>:5249/scan/signal/44.1?seconds=15"`. `lockedPercent` below 100, or an SNR range that dips below about 15 dB, means marginal reception. Compare against `scanSnrDb`, and try the antenna position or an amplifier. If the channel is received on several frequencies, check the alternates (`/scan/signal/44.1/1`) too.
 - **`Permission denied` on `frontend0`:** the user isn't in the `video` group, or hasn't logged in again since being added.
 - **Listening on `localhost:5000`:** `appsettings.json` wasn't found or has no `Urls` setting.
-- **"Tuner in use":** there's one tuner. A stream on one frequency blocks scans and streams on other frequencies until it ends. The dashboard's Tuner card shows what holds it (also `GET /stream/status`). If it's stuck, for example on a stream Jellyfin abandoned, click **Disconnect** or run `curl -X POST http://<host>:5249/stream/disconnect`. That ends every stream, scan and measurement holding the tuner.
+- **"Tuner in use":** there's one tuner. Any number of streams can share it if they're on the same RF channel (e.g. 8.1 and 8.2), but a stream on one frequency blocks scans and streams on other frequencies until it ends. The dashboard's Tuner card shows what holds it (also `GET /stream/status`). If it's stuck, for example on a stream Jellyfin abandoned, click **Disconnect** or run `curl -X POST http://<host>:5249/stream/disconnect`. That ends every stream, scan and measurement holding the tuner.
 - **Missing guide text for a station:** it may send compressed text, which isn't supported yet (see [ABOUT](docs/ABOUT.md#known-limitations--next-steps)).
 
 ## Development

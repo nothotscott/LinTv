@@ -24,6 +24,8 @@ namespace LinTv.Core.Services
 
         public IChannelStore ChannelStore { private get; init; }
 
+        public IProgramStreamBroadcaster Broadcaster { private get; init; }
+
         public IGuideStore GuideStore { private get; init; }
 
         public ScanStatus Status => _status;
@@ -33,12 +35,14 @@ namespace LinTv.Core.Services
             IOptions<LinTvConfiguration> config,
             ITunerArbiterService tunerArbiter,
             IChannelStore channelStore,
-            IGuideStore guideStore)
+            IGuideStore guideStore,
+            IProgramStreamBroadcaster broadcaster)
         {
             Logger = logger;
             Config = config.Value;
             TunerArbiter = tunerArbiter;
             ChannelStore = channelStore;
+            Broadcaster = broadcaster;
             GuideStore = guideStore;
         }
 
@@ -137,7 +141,7 @@ namespace LinTv.Core.Services
                 var collector = new PsipGuideCollector(bySource.Keys.ToHashSet());
                 Logger.LogDebug("RF {Rf}: collecting guide for {Channels} (up to {Timeout}s)",
                     rf, string.Join(", ", channels.Select(c => c.Id)), timeout.TotalSeconds);
-                bool complete = await CollectAsync(lease.Tuner, collector, timeout, revocable.Token);
+                bool complete = await CollectAsync(collector, timeout, revocable.Token);
 
                 var events = collector.GetEvents()
                     .Select(x => new GuideEvent(
@@ -160,7 +164,7 @@ namespace LinTv.Core.Services
 
         /// Returns true if the collector completed, false if the timeout cut it short. Partial
         /// data is still kept: it usually covers the next few hours, which matter most.
-        private static async Task<bool> CollectAsync(IDvbTuner tuner, PsipGuideCollector collector,
+        private async Task<bool> CollectAsync(PsipGuideCollector collector,
             TimeSpan collectTimeout, CancellationToken ct)
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -169,7 +173,7 @@ namespace LinTv.Core.Services
             var framer = new TsPacketFramer();
             try
             {
-                await foreach (var chunk in tuner.ReadTransportStreamAsync(timeout.Token))
+                await foreach (var chunk in Broadcaster.ReadMultiplexAsync(timeout.Token))
                 {
                     framer.Push(chunk.Span, collector.Feed);
                     if (collector.IsComplete) return true;

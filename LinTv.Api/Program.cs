@@ -8,6 +8,7 @@ using LinTv.Core.Driver;
 using LinTv.Core.Stores;
 using LinTv.Core.Writers;
 using LinTv.Core.Logging;
+using LinTv.Core.Mpeg;
 using LinTv.Core.Domain;
 
 // Resolve appsettings.json next to the binary, not the caller's working directory,
@@ -39,12 +40,15 @@ builder.Services.AddOptions<LinTvConfiguration>()
     // Fail at startup on a typo like "25pm", rather than silently never scanning.
     .Validate(c => DailySchedule.TryParse(c.EpgScanTimes, out _, out _),
         "LinTv:EpgScanTimes must be times of day like \"11am\", \"11:30pm\" or \"23:00\"")
+    .Validate(c => c.TunerCount >= 1, "LinTv:TunerCount must be at least 1")
     .ValidateOnStart();
 builder.Services.AddSingleton<ITunerArbiterService, TunerArbiterService>();
 builder.Services.AddSingleton<IDvbTuner, LinuxDvbTuner>((sp) =>
     new LinuxDvbTuner(
         sp.GetRequiredService<IOptions<LinTvConfiguration>>().Value.Adapter,
         sp.GetRequiredService<ILogger<LinuxDvbTuner>>()));
+// dvr0 allows one reader: every consumer reads the multiplex through the broadcaster.
+builder.Services.AddSingleton<IProgramStreamBroadcaster, ProgramStreamBroadcaster>();
 builder.Services.AddSingleton<IChannelStore, JsonChannelStore>();
 builder.Services.AddSingleton<IGuideStore, JsonGuideStore>();
 builder.Services.AddSingleton<IChannelMapStore, JsonChannelMapStore>();

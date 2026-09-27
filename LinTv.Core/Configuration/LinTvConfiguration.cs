@@ -33,6 +33,12 @@ namespace LinTv.Core.Configuration
         /// Daily log files in {StorageDirectory}/logs older than this are deleted.
         public int LogRetentionDays { get; set; } = 7;
 
+        /// Tuners reported to Plex/Jellyfin (discover.json). Clients cap concurrent streams at this.
+        /// There's one physical tuner, but any number of streams can share it on the same RF
+        /// channel, so a higher value allows e.g. 8.1 and 8.2 at once. A stream on a different RF
+        /// channel than one already playing is still refused with 503.
+        public int TunerCount { get; set; } = 1;
+
         /// Name Plex/Jellyfin show for the tuner.
         public string FriendlyName { get; set; } = "LinTv";
 

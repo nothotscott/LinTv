@@ -24,18 +24,22 @@ namespace LinTv.Core.Services
 
         public IChannelStore ChannelStore { private get; init; }
 
+        public IProgramStreamBroadcaster Broadcaster { private get; init; }
+
         public ScanStatus Status => _status;
 
         public ChannelScanner(
             ILogger<ChannelScanner> logger,
             IOptions<LinTvConfiguration> config,
             ITunerArbiterService tunerArbiter,
-            IChannelStore channelStore)
+            IChannelStore channelStore,
+            IProgramStreamBroadcaster broadcaster)
         {
             Logger = logger;
             Config = config.Value;
             TunerArbiter = tunerArbiter;
             ChannelStore = channelStore;
+            Broadcaster = broadcaster;
         }
 
         public bool TryStartScan(CancellationToken ct)
@@ -150,7 +154,7 @@ namespace LinTv.Core.Services
             {
                 Logger.LogTrace("RF {Rf}: scanning Vct within {Timeout}s", rf.Number, vctTimeout.TotalSeconds);
                 var signalAtLock = tuner.ReadSignalStatus();
-                var vct = await ReadVctAsync(tuner, vctTimeout, revocable.Token);
+                var vct = await ReadVctAsync(vctTimeout, revocable.Token);
 
                 // Two samples a moment apart smooth out a single noisy reading.
                 var signalAfterVct = tuner.ReadSignalStatus();
@@ -191,7 +195,7 @@ namespace LinTv.Core.Services
             }
         }
 
-        private static async Task<VctCollector?> ReadVctAsync(IDvbTuner tuner, TimeSpan vctTimeout, CancellationToken ct)
+        private async Task<VctCollector?> ReadVctAsync(TimeSpan vctTimeout, CancellationToken ct)
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(vctTimeout);
@@ -203,7 +207,7 @@ namespace LinTv.Core.Services
 
             try
             {
-                await foreach (var chunk in tuner.ReadTransportStreamAsync(timeout.Token))
+                await foreach (var chunk in Broadcaster.ReadMultiplexAsync(timeout.Token))
                 {
                     framer.Push(chunk.Span, packet => assembler.Feed(packet, sections));
 

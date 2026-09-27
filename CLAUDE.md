@@ -57,7 +57,8 @@ $env:LinTv__StorageDirectory = "$env:TEMP\lintv"; dotnet run --project LinTv.Api
 - **Data Protection keys:** they go to `StorageDirectory/keys` (`Program.cs`). Without that, ASP.NET writes them to `$HOME/.aspnet/DataProtection-Keys`, which for the `lintv` user landed inside `/opt/lintv`. The files were owned by `lintv`, so `publish.ps1` (running as the deploy user) couldn't empty the directory. Nothing the service writes at runtime may go under `/opt/lintv`.
 - **Case matters on the server:** Linux is case-sensitive and the names are `LinTv.*`, not `LinTV.*`. The repo folder itself is `LinTV`.
 - **Struct layouts:** `LinuxDvbTuner` layouts (`DtvProperty` = 76 bytes, `DmxPesFilterParams`) and ioctl numbers are 64-bit-specific. Recheck them against `linux/dvb/frontend.h` / `dmx.h` before changing.
-- **Tuner lifetime:** the frontend fd stays open for the process lifetime (closing it drops the tune), and only one reader can hold `dvr0`.
+- **Tuner lifetime:** the frontend fd stays open for the process lifetime (closing it drops the tune).
+- **Read the multiplex only through `IProgramStreamBroadcaster`:** `StreamProgramAsync(program)` for a demuxed channel, `ReadMultiplexAsync()` for raw PSIP (scanners). The device allows one `dvr0` reader, and the broadcaster's single pump is what lets several streams and scans share a tune. Calling `IDvbTuner.ReadTransportStreamAsync` anywhere else fails with `EBUSY` as soon as anything else is reading. `IDvbTuner` stays device-only.
 - **`dvr0` is read non-blocking with `poll()`:** 500 ms slices, yielding **empty chunks** as idle ticks. Consumers must tolerate empty chunks, and use them to check deadlines. Never go back to a blocking `read()`/`FileStream`: with a dead signal it never returns, cancellation is never seen, and the tuner stays held forever (only one reader can have `dvr0` open).
 
 ## Skills

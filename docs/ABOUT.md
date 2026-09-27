@@ -56,7 +56,12 @@ All these tables arrive as **sections**, which may span packets. `PsiSectionAsse
 - **Tuning:** a single `FE_SET_PROPERTY` ioctl sends `DTV_CLEAR`, delivery system ATSC, 8VSB, frequency, auto inversion and `DTV_TUNE`. The ioctl only queues the tune. `WaitForLockAsync` then polls `FE_READ_STATUS` for `FE_HAS_LOCK`.
 - **Signal:** strength and SNR come from the legacy `FE_READ_SIGNAL_STRENGTH`/`FE_READ_SNR` ioctls. Their units are driver-specific: the HVR-1800's s5h1409 demod gives strength 0–65535 and SNR in tenths of a dB.
 - **The frontend fd stays open for the process lifetime.** Closing it lets the driver power the tuner down and drop the tune.
-- **Reading:** a pass-through demux filter (`DMX_SET_PES_FILTER`, PID `0x2000` = all, output `DMX_OUT_TS_TAP`) makes `dvr0` a plain byte stream of the whole multiplex. The filter lives as long as the demux fd, so it's opened per read and closed in `finally`. Only one reader can have `dvr0` open.
+- **Reading:** a pass-through demux filter (`DMX_SET_PES_FILTER`, PID `0x2000` = all, output `DMX_OUT_TS_TAP`) makes `dvr0` a plain byte stream of the whole multiplex. The filter lives as long as the demux fd, so it's opened per read and closed in `finally`. Only one reader can have `dvr0` open, so the multiplex is read once and shared (next point).
+- **Sharing the read (`ProgramStreamBroadcaster`, in `Core/Mpeg`):** it is the single reader of `IDvbTuner.ReadTransportStreamAsync`, and all consumers go through it.
+  - **One pump:** the first subscriber starts a pump, and later subscribers attach to it. Each gets every chunk, including idle ticks, in its own bounded backlog (64 chunks, about 1.5 s). A reader that falls behind loses chunks, with a warning, instead of stalling the others.
+  - **Shutdown:** the pump stops when the last reader leaves. A new reader arriving mid-shutdown waits for `dvr0` to close rather than hitting `EBUSY`. Read errors are passed to every reader.
+  - **Two entry points:** `ReadMultiplexAsync()` gives the raw multiplex (used by the channel and EPG scanners). `StreamProgramAsync(program)` adds a per-subscriber framer and `ProgramDemuxer` and yields single-program TS. It throws `ProgramNotFoundException` before yielding anything if the PAT doesn't list the program in 5 s, and ends after `StreamStallTimeoutSeconds` without output. `StreamController` is left with the lease, HTTP and logging.
+  - **Result:** viewers on subchannels of one RF channel, and an EPG scan alongside a viewer, run at once.
 - **Struct layouts** (`DtvProperty` 76 bytes, ioctl numbers) assume a 64-bit process, and the tuner throws otherwise.
 - **Stall watchdog:** a timer logs a warning every 5 s with no data. Reads use `poll()` with 500 ms slices on a non-blocking fd, yielding an empty chunk when nothing arrives, so a dead signal can't block a reader: cancellation and deadlines are always checked.
 
@@ -90,7 +95,7 @@ The same `major.minor` can be received on several RFs, such as a translator or a
 
 ## Streaming one channel (`ProgramDemuxer`)
 
-`/stream/{major}.{minor}/{index?}` acquires the tuner at `LiveView` priority and runs the multiplex through `ProgramDemuxer`:
+`/stream/{major}.{minor}/{index?}` acquires the tuner at `LiveView` priority and reads `ProgramStreamBroadcaster.StreamProgramAsync`, which runs its copy of the multiplex through a `ProgramDemuxer`:
 
 - **PAT:** the demuxer follows the PAT to the program's PMT PID. It then emits a **rewritten PAT** that lists only this program each time the source PAT repeats (~100 ms). The rewritten PAT keeps the source TSID and version and has its own continuity counter.
 - **Pass-through:** the PMT and the elementary-stream and PCR PIDs it lists pass through unmodified. Everything else is dropped: other programs, PSIP and null packets.
@@ -118,7 +123,7 @@ The same `major.minor` can be received on several RFs, such as a translator or a
 
 | Endpoint | Format notes |
 |---|---|
-| `discover.json`, `lineup.json`, `lineup_status.json` | HDHomeRun's exact **PascalCase** keys (`HdHomeRunJson.Options`), because clients match names exactly. `discover.json` claims model `HDHR5-2US` with `TunerCount` 1. `DeviceID` must stay stable, because clients key the device on it. `lineup.json` is built by `HdHomeRunLineupService`: `GuideName` is the channel map's **first** name if there is one, otherwise the broadcast short name. That's what Jellyfin's HDHomeRun tuner displays and matches on; it doesn't use XMLTV display-names for that. |
+| `discover.json`, `lineup.json`, `lineup_status.json` | HDHomeRun's exact **PascalCase** keys (`HdHomeRunJson.Options`), because clients match names exactly. `discover.json` claims model `HDHR5-2US`, with `TunerCount` from config (default 1). `DeviceID` must stay stable, because clients key the device on it. `lineup.json` is built by `HdHomeRunLineupService`: `GuideName` is the channel map's **first** name if there is one, otherwise the broadcast short name. That's what Jellyfin's HDHomeRun tuner displays and matches on; it doesn't use XMLTV display-names for that. |
 | `lineup.m3u` | Extended M3U with `tvg-id` = `major.minor`, and `x-tvg-url` pointing at `guide.xml`. |
 | `guide.xml` | XMLTV. Channel id = `major.minor`. Display names are `"13.1 WTVT-DT"`, `"WTVT-DT"`, `"13.1"`, then any channel-map names (e.g. `"FOX"`). |
 

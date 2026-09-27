@@ -9,14 +9,11 @@ namespace LinTv.Api.Controllers
     public class DeviceController : ControllerBase
     {
         // Identify as an ATSC 1.0 HDHomeRun CONNECT. Clients use ModelNumber/FirmwareName to pick
-        // a feature set, so it has to be a real model string; TunerCount below is what they trust
-        // for concurrency.
+        // a feature set, so it has to be a real model string. For concurrency they trust
+        // TunerCount, which comes from LinTvConfiguration.TunerCount.
         private const string ModelNumber = "HDHR5-2US";
         private const string FirmwareName = "hdhomerun5_atsc";
         private const string FirmwareVersion = "20240101";
-
-        // One HVR-1800, and TunerArbiterService arbitrates a single tuner.
-        private const int TunerCount = 1;
 
         public LinTvConfiguration Config { private get; init; }
 
@@ -38,7 +35,7 @@ namespace LinTv.Api.Controllers
                 DeviceAuth: "",
                 BaseURL: baseUrl,
                 LineupURL: $"{baseUrl}/lineup.json",
-                TunerCount: TunerCount);
+                TunerCount: Config.TunerCount);
             return new JsonResult(discover, HdHomeRunJson.Options);
         }
     }
