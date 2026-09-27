@@ -18,9 +18,11 @@ namespace LinTv.Core.Mpeg
     /// last one leaves. Program subscribers then frame and demux their copy independently.
     public sealed class ProgramStreamBroadcaster : IProgramStreamBroadcaster
     {
-        /// Per-subscriber backlog: ~64 KB chunks, so about 4 MB or ~1.5 s of a full multiplex. A
-        /// subscriber further behind than that loses chunks rather than stalling the others.
-        private const int SubscriberBacklog = 64;
+        /// Per-subscriber backlog in chunks. The tuner batches reads into ~48-64 KB chunks
+        /// (LinuxDvbTuner.FillBatch), so this is ~12 MB or ~5 s of a full multiplex: room for a
+        /// slow single-core box to hiccup. A subscriber further behind than that loses chunks
+        /// rather than stalling the others.
+        private const int SubscriberBacklog = 256;
 
         /// PATs repeat every ~100 ms, so a program missing for this long isn't in the multiplex.
         private static readonly TimeSpan ProgramTimeout = TimeSpan.FromSeconds(5);
@@ -59,7 +61,7 @@ namespace LinTv.Core.Mpeg
             var sinceOutput = Stopwatch.StartNew();
             bool loggedStreams = false;
 
-            await foreach (var chunk in ReadMultiplexAsync(ct))
+            await foreach (var chunk in ReadAsync($"program {programNumber}", ct))
             {
                 framer.Push(chunk.Span, packet => demuxer.Process(packet, output));
 
@@ -101,10 +103,14 @@ namespace LinTv.Core.Mpeg
             }
         }
 
-        public async IAsyncEnumerable<ReadOnlyMemory<byte>> ReadMultiplexAsync(
+        public IAsyncEnumerable<ReadOnlyMemory<byte>> ReadMultiplexAsync(CancellationToken ct) =>
+            ReadAsync("multiplex", ct);
+
+        /// Label identifies the reader in log messages ("program 8", "multiplex").
+        private async IAsyncEnumerable<ReadOnlyMemory<byte>> ReadAsync(string label,
             [EnumeratorCancellation] CancellationToken ct)
         {
-            var subscriber = new Subscriber();
+            var subscriber = new Subscriber(label);
             await SubscribeAsync(subscriber, ct);
             try
             {
@@ -127,7 +133,7 @@ namespace LinTv.Core.Mpeg
                     if (_pump is not null)
                     {
                         _subscribers.Add(subscriber);
-                        Logger.LogDebug("Joined shared TS read ({Count} readers)", _subscribers.Count);
+                        Logger.LogDebug("{Reader} joined shared TS read ({Count} readers)", subscriber.Label, _subscribers.Count);
                         return;
                     }
 
@@ -138,7 +144,7 @@ namespace LinTv.Core.Mpeg
                         var generation = ++_pumpGeneration;
                         var stop = _pumpStop.Token;
                         _pump = Task.Run(() => PumpAsync(generation, stop), CancellationToken.None);
-                        Logger.LogDebug("Started shared TS read");
+                        Logger.LogDebug("Started shared TS read for {Reader}", subscriber.Label);
                         return;
                     }
 
@@ -158,7 +164,7 @@ namespace LinTv.Core.Mpeg
             lock (_lock)
             {
                 if (!_subscribers.Remove(subscriber)) return;
-                Logger.LogDebug("Left shared TS read ({Count} readers remain)", _subscribers.Count);
+                Logger.LogDebug("{Reader} left shared TS read ({Count} readers remain)", subscriber.Label, _subscribers.Count);
 
                 if (_subscribers.Count == 0 && _pump is not null)
                 {
@@ -219,9 +225,11 @@ namespace LinTv.Core.Mpeg
             }
         }
 
-        private sealed class Subscriber
+        private sealed class Subscriber(string label)
         {
             private long _dropped;
+
+            public string Label { get; } = label;
 
             public Channel<ReadOnlyMemory<byte>> Channel { get; } =
                 System.Threading.Channels.Channel.CreateBounded<ReadOnlyMemory<byte>>(
@@ -237,7 +245,8 @@ namespace LinTv.Core.Mpeg
                 var dropped = Interlocked.Increment(ref _dropped);
                 // First drop, then every 100th: enough to notice without flooding.
                 if (dropped == 1 || dropped % 100 == 0)
-                    logger.LogWarning("A stream reader is falling behind; {Count} chunk(s) dropped for it", dropped);
+                    logger.LogWarning("Reader {Reader} is falling behind; {Count} chunk(s) dropped for it (backlog {Backlog})",
+                        Label, dropped, SubscriberBacklog);
             }
         }
     }

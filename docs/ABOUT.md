@@ -58,12 +58,13 @@ All these tables arrive as **sections**, which may span packets. `PsiSectionAsse
 - **The frontend fd stays open for the process lifetime.** Closing it lets the driver power the tuner down and drop the tune.
 - **Reading:** a pass-through demux filter (`DMX_SET_PES_FILTER`, PID `0x2000` = all, output `DMX_OUT_TS_TAP`) makes `dvr0` a plain byte stream of the whole multiplex. The filter lives as long as the demux fd, so it's opened per read and closed in `finally`. Only one reader can have `dvr0` open, so the multiplex is read once and shared (next point).
 - **Sharing the read (`ProgramStreamBroadcaster`, in `Core/Mpeg`):** it is the single reader of `IDvbTuner.ReadTransportStreamAsync`, and all consumers go through it.
-  - **One pump:** the first subscriber starts a pump, and later subscribers attach to it. Each gets every chunk, including idle ticks, in its own bounded backlog (64 chunks, about 1.5 s). A reader that falls behind loses chunks, with a warning, instead of stalling the others.
+  - **One pump:** the first subscriber starts a pump, and later subscribers attach to it. Each gets every chunk, including idle ticks, in its own bounded backlog (256 chunks, about 5 s). A reader that falls behind loses chunks, with a warning, instead of stalling the others.
   - **Shutdown:** the pump stops when the last reader leaves. A new reader arriving mid-shutdown waits for `dvr0` to close rather than hitting `EBUSY`. Read errors are passed to every reader.
   - **Two entry points:** `ReadMultiplexAsync()` gives the raw multiplex (used by the channel and EPG scanners). `StreamProgramAsync(program)` adds a per-subscriber framer and `ProgramDemuxer` and yields single-program TS. It throws `ProgramNotFoundException` before yielding anything if the PAT doesn't list the program in 5 s, and ends after `StreamStallTimeoutSeconds` without output. `StreamController` is left with the lease, HTTP and logging.
   - **Result:** viewers on subchannels of one RF channel, and an EPG scan alongside a viewer, run at once.
 - **Struct layouts** (`DtvProperty` 76 bytes, ioctl numbers) assume a 64-bit process, and the tuner throws otherwise.
 - **Stall watchdog:** a timer logs a warning every 5 s with no data. Reads use `poll()` with 500 ms slices on a non-blocking fd, yielding an empty chunk when nothing arrives, so a dead signal can't block a reader: cancellation and deadlines are always checked.
+- **Batched reads:** `poll()` wakes on *any* data, so reading once per wake-up gives chunks of a few KB, hundreds of times a second. On a single-core box that per-chunk overhead (thread-pool hop, fan-out, demux, HTTP write per stream) made readers fall behind. `FillBatch` keeps reading until about 48 KB or 50 ms after the first byte, in one thread-pool hop, which gives about 40–50 chunks per second. The "TS read stopped" debug line reports the chunk count and average size.
 
 ## Sharing the tuner (`TunerArbiterService`)
 
@@ -156,6 +157,23 @@ The logging is aimed at "is the tuner stuck?". The README lists the key messages
 ## Testing without the card
 
 There's no test project yet. The MPEG/PSIP code has been verified with throwaway **.NET 10 file-based apps** that build synthetic sections (with real CRCs), packetize them, and feed them through the framer, assembler and parsers. See `.claude/skills/offline-ts-test`. On Windows, the API runs fine for everything except tuning (`libc` isn't found). To point it at a scratch state directory, set `LinTv__StorageDirectory`.
+
+## Field test: six programs on one multiplex (2026-09-27)
+
+**Setup:** the production server, which has a single physical CPU core and an HVR-1800. RF 12 (207 MHz) locked in 233 ms at 66% strength and SNR 23.0 dB. Jellyfin on one client opened all six subchannels (13.1–13.6) at once, adding one about every 15–55 s, then closed them one by one.
+
+| Measure | Result |
+|---|---|
+| Streams sharing one tune | 6 leases, 1 `dvr0` read (`joined shared TS read (6 readers)`) |
+| Multiplex read | 428.6 MB in 176.9 s: **19.4 Mbps**, the full ATSC payload |
+| Batching | 7,127 chunks, **avg 59 KB**, about 40 chunks/s |
+| Kernel buffer overruns | **0** |
+| Dropped chunks | **1** (program 3, at 17:46:26, during the burst of clients disconnecting). Otherwise none across all six readers. |
+| Time from join to PMT | 70–171 ms per program |
+| Per-program output | 1.1–1.7 Mbps for SD subchannels 13.2–13.6, 9.0 Mbps for HD 13.1 |
+| Teardown | Every stream logged `client disconnected`. The last release left the tuner idle, and `dvr0` closed within 50 ms. |
+
+**Before batching**, one core couldn't keep up with two readers. `poll()` woke on every few KB, so reads produced hundreds of tiny chunks a second, and one reader dropped about 71 chunks/s (see [Batched reads](#the-tuner-lintvlinux)). With batching, six readers run with a single drop. The limit on one RF channel is now the client and network, not the server.
 
 ## Known limitations / next steps
 

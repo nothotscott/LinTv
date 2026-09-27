@@ -23,6 +23,9 @@ namespace LinTv.Linux.Driver
         private const short POLLIN = 0x1;
         /// Longest a read waits before handing control back to the consumer.
         private const int PollSliceMs = 500;
+        /// A batch closes at ~48 KB (about 20 ms of a full multiplex) or 50 ms after its first byte,
+        /// whichever comes first: ~40-50 chunks/s, with little added latency.
+        private const int MinBatchBytes = 48 * 1024, MaxBatchWaitMs = 50;
 
         // _IOW('o', 82, struct dtv_properties); sizeof(dtv_properties) == 16 on 64-bit
         private const nuint FE_SET_PROPERTY = 0x40106f52;
@@ -198,48 +201,93 @@ namespace LinTv.Linux.Driver
                 var buffer = new byte[188 * 348]; // ~64 KB, packet-aligned
                 while (!ct.IsCancellationRequested)
                 {
-                    // poll() blocks its thread for up to one slice, so keep it off the caller's.
-                    bool readable = await Task.Run(() => WaitReadable(dvrFd, PollSliceMs), CancellationToken.None);
-                    if (!readable)
+                    // poll()/read() block their thread briefly, so keep them off the caller's. One
+                    // hop per batch, not per read: on a slow single core, per-read overhead is
+                    // what made readers fall behind.
+                    var batch = await Task.Run(() => FillBatch(dvrFd, buffer), CancellationToken.None);
+
+                    if (batch.Overflows > 0)
+                    {
+                        // The kernel ring buffer overran because we read too slowly. Packets
+                        // were dropped, but the stream carries on.
+                        progress.Overflows += batch.Overflows;
+                        Logger.LogTrace("dvr0 overflow: {Total} so far, packets dropped", progress.Overflows);
+                    }
+                    if (batch.Errno != 0)
+                        throw new IOException($"read from {Dev("dvr0")} failed: {Marshal.GetPInvokeErrorMessage(batch.Errno)}");
+
+                    if (batch.Filled > 0)
+                    {
+                        progress.Bytes += batch.Filled;
+                        progress.Chunks++;
+                        Volatile.Write(ref progress.LastDataTicks, Environment.TickCount64);
+                        yield return buffer.AsMemory(0, batch.Filled).ToArray(); // copy: consumers outlive the buffer
+                    }
+                    else if (!batch.EndOfStream)
                     {
                         // Idle tick: gives the consumer a chance to check its own deadlines.
                         yield return ReadOnlyMemory<byte>.Empty;
-                        continue;
                     }
 
-                    var (read, errno) = ReadInto(dvrFd, buffer);
-                    if (read < 0)
-                    {
-                        if (errno is EAGAIN or EINTR) continue;
-                        if (errno == EOVERFLOW)
-                        {
-                            // The kernel ring buffer overran because we read too slowly. Packets
-                            // were dropped, but the stream carries on.
-                            progress.Overflows++;
-                            Logger.LogTrace("dvr0 overflow #{Count}: packets dropped", progress.Overflows);
-                            continue;
-                        }
-                        throw new IOException($"read from {Dev("dvr0")} failed: {Marshal.GetPInvokeErrorMessage(errno)}");
-                    }
-
-                    if (read == 0)
+                    if (batch.EndOfStream)
                     {
                         Logger.LogWarning("dvr0 returned end-of-stream");
                         yield break;
                     }
-
-                    progress.Bytes += read;
-                    Volatile.Write(ref progress.LastDataTicks, Environment.TickCount64);
-                    yield return buffer.AsMemory(0, (int)read).ToArray(); // copy: consumers outlive the buffer
                 }
             }
             finally
             {
                 close(dvrFd);
                 close(demuxFd);
-                Logger.LogDebug("TS read stopped after {Seconds:F1}s: {MegaBytes:F1} MB, {Overflows} overflows",
-                    elapsed.Elapsed.TotalSeconds, progress.Bytes / 1_000_000.0, progress.Overflows);
+                Logger.LogDebug("TS read stopped after {Seconds:F1}s: {MegaBytes:F1} MB in {Chunks} chunks (avg {AvgKb:F0} KB), {Overflows} overflows",
+                    elapsed.Elapsed.TotalSeconds, progress.Bytes / 1_000_000.0, progress.Chunks,
+                    progress.Chunks > 0 ? progress.Bytes / 1024.0 / progress.Chunks : 0, progress.Overflows);
             }
+        }
+
+        private readonly record struct Batch(int Filled, int Overflows, int Errno, bool EndOfStream);
+
+        /// Fills buffer with one batch. It waits up to PollSliceMs for the first data, then keeps
+        /// reading until MinBatchBytes have arrived, MaxBatchWaitMs have passed since the first
+        /// byte, or the buffer is full. poll() wakes on any data, so without batching each chunk
+        /// would be a few KB and the per-chunk costs (wake-ups, fan-out, demux, HTTP writes) are
+        /// paid hundreds of times a second. Filled = 0 without EndOfStream means an idle slice.
+        private static Batch FillBatch(int fd, byte[] buffer)
+        {
+            int filled = 0, overflows = 0;
+            long deadline = 0;
+
+            while (filled < buffer.Length)
+            {
+                int timeout;
+                if (filled == 0)
+                {
+                    timeout = PollSliceMs;
+                }
+                else
+                {
+                    if (filled >= MinBatchBytes) break;
+                    timeout = (int)Math.Max(0, deadline - Environment.TickCount64);
+                    if (timeout == 0) break;
+                }
+
+                if (!WaitReadable(fd, timeout)) break;
+
+                var (read, errno) = ReadInto(fd, buffer, filled);
+                if (read < 0)
+                {
+                    if (errno is EAGAIN or EINTR) continue;
+                    if (errno == EOVERFLOW) { overflows++; continue; }
+                    return new Batch(filled, overflows, errno, EndOfStream: false);
+                }
+                if (read == 0) return new Batch(filled, overflows, 0, EndOfStream: true);
+
+                if (filled == 0) deadline = Environment.TickCount64 + MaxBatchWaitMs;
+                filled += (int)read;
+            }
+
+            return new Batch(filled, overflows, 0, EndOfStream: false);
         }
 
         /// True if fd has data within timeoutMs; false on timeout or signal interruption.
@@ -258,11 +306,11 @@ namespace LinTv.Linux.Driver
         }
 
         /// Returns errno alongside the result, captured before anything else can overwrite it.
-        private static unsafe (nint Read, int Errno) ReadInto(int fd, byte[] buffer)
+        private static unsafe (nint Read, int Errno) ReadInto(int fd, byte[] buffer, int offset)
         {
             fixed (byte* p = buffer)
             {
-                nint n = read(fd, p, (nuint)buffer.Length);
+                nint n = read(fd, p + offset, (nuint)(buffer.Length - offset));
                 return (n, n < 0 ? Marshal.GetLastPInvokeError() : 0);
             }
         }
@@ -290,6 +338,7 @@ namespace LinTv.Linux.Driver
         {
             public long LastDataTicks = Environment.TickCount64;
             public long Bytes;
+            public long Chunks;
             public int Overflows;
         }
 
