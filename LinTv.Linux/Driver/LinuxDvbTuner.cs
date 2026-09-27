@@ -17,7 +17,12 @@ namespace LinTv.Linux.Driver
         private const int EINTR = 4, EACCES = 13;
         private const ushort AllPids = 0x2000;
 
-        private const int EOVERFLOW = 75;
+        private const int EOVERFLOW = 75, EAGAIN = 11;
+        // Linux x86-64/arm64 values (asm-generic/fcntl.h, poll.h).
+        private const int O_NONBLOCK = 0x800;
+        private const short POLLIN = 0x1;
+        /// Longest a read waits before handing control back to the consumer.
+        private const int PollSliceMs = 500;
 
         // _IOW('o', 82, struct dtv_properties); sizeof(dtv_properties) == 16 on 64-bit
         private const nuint FE_SET_PROPERTY = 0x40106f52;
@@ -82,6 +87,8 @@ namespace LinTv.Linux.Driver
         [DllImport("libc", SetLastError = true)] private static extern int open(string path, int flags);
         [DllImport("libc", SetLastError = true)] private static extern int ioctl(int fd, nuint request, IntPtr arg);
         [DllImport("libc", SetLastError = true)] private static extern int close(int fd);
+        [DllImport("libc", SetLastError = true)] private static extern unsafe int poll(PollFd* fds, nuint nfds, int timeout);
+        [DllImport("libc", SetLastError = true)] private static extern unsafe nint read(int fd, byte* buf, nuint count);
 
         private string Dev(string node) => $"/dev/dvb/adapter{Adapter}/{node}";
 
@@ -173,29 +180,46 @@ namespace LinTv.Linux.Driver
             var elapsed = Stopwatch.StartNew();
             Logger.LogDebug("TS read started (demux fd {Fd})", demuxFd);
 
-            // Fires on a timer thread, so it still reports while ReadAsync is blocked in the kernel.
+            // Non-blocking + poll(): a blocking read() on dvr0 never returns when the signal dies,
+            // so cancellation (client gone, lease revoked) would never be seen and the fds, and
+            // with them the tuner, would be held forever.
+            int dvrFd = open(Dev("dvr0"), O_RDONLY | O_NONBLOCK);
+            if (dvrFd < 0)
+            {
+                var error = Marshal.GetLastPInvokeErrorMessage();
+                close(demuxFd);
+                throw new IOException($"Unable to open {Dev("dvr0")}: {error} (only one reader at a time; a stuck stream can be ended with POST /stream/disconnect)");
+            }
+
+            // Fires on a timer thread, so it reports even if the consumer stops pulling.
             using var watchdog = new Timer(_ => WarnIfStalled(progress), null, StallWarningInterval, StallWarningInterval);
             try
             {
-                // bufferSize 0: read straight into our buffer, no FileStream double-buffering.
-                await using var dvr = new FileStream(Dev("dvr0"), FileMode.Open, FileAccess.Read,
-                    FileShare.ReadWrite, bufferSize: 0);
-
                 var buffer = new byte[188 * 348]; // ~64 KB, packet-aligned
                 while (!ct.IsCancellationRequested)
                 {
-                    int read;
-                    try
+                    // poll() blocks its thread for up to one slice, so keep it off the caller's.
+                    bool readable = await Task.Run(() => WaitReadable(dvrFd, PollSliceMs), CancellationToken.None);
+                    if (!readable)
                     {
-                        read = await dvr.ReadAsync(buffer, ct);
-                    }
-                    catch (IOException ex) when (ex.HResult == EOVERFLOW)
-                    {
-                        // The kernel ring buffer overran because we read too slowly. Packets
-                        // were dropped, but the stream carries on.
-                        progress.Overflows++;
-                        Logger.LogTrace("dvr0 overflow #{Count}: packets dropped", progress.Overflows);
+                        // Idle tick: gives the consumer a chance to check its own deadlines.
+                        yield return ReadOnlyMemory<byte>.Empty;
                         continue;
+                    }
+
+                    var (read, errno) = ReadInto(dvrFd, buffer);
+                    if (read < 0)
+                    {
+                        if (errno is EAGAIN or EINTR) continue;
+                        if (errno == EOVERFLOW)
+                        {
+                            // The kernel ring buffer overran because we read too slowly. Packets
+                            // were dropped, but the stream carries on.
+                            progress.Overflows++;
+                            Logger.LogTrace("dvr0 overflow #{Count}: packets dropped", progress.Overflows);
+                            continue;
+                        }
+                        throw new IOException($"read from {Dev("dvr0")} failed: {Marshal.GetPInvokeErrorMessage(errno)}");
                     }
 
                     if (read == 0)
@@ -206,15 +230,49 @@ namespace LinTv.Linux.Driver
 
                     progress.Bytes += read;
                     Volatile.Write(ref progress.LastDataTicks, Environment.TickCount64);
-                    yield return buffer.AsMemory(0, read).ToArray(); // copy: consumers outlive the buffer
+                    yield return buffer.AsMemory(0, (int)read).ToArray(); // copy: consumers outlive the buffer
                 }
             }
             finally
             {
+                close(dvrFd);
                 close(demuxFd);
                 Logger.LogDebug("TS read stopped after {Seconds:F1}s: {MegaBytes:F1} MB, {Overflows} overflows",
                     elapsed.Elapsed.TotalSeconds, progress.Bytes / 1_000_000.0, progress.Overflows);
             }
+        }
+
+        /// True if fd has data within timeoutMs; false on timeout or signal interruption.
+        private static unsafe bool WaitReadable(int fd, int timeoutMs)
+        {
+            var pfd = new PollFd { Fd = fd, Events = POLLIN };
+            int rc = poll(&pfd, 1, timeoutMs);
+            if (rc < 0)
+            {
+                int errno = Marshal.GetLastPInvokeError();
+                if (errno == EINTR) return false;
+                throw new IOException($"poll on dvr0 failed: {Marshal.GetPInvokeErrorMessage(errno)}");
+            }
+            // POLLERR (e.g. overflow) also counts: the following read reports it as EOVERFLOW.
+            return rc > 0;
+        }
+
+        /// Returns errno alongside the result, captured before anything else can overwrite it.
+        private static unsafe (nint Read, int Errno) ReadInto(int fd, byte[] buffer)
+        {
+            fixed (byte* p = buffer)
+            {
+                nint n = read(fd, p, (nuint)buffer.Length);
+                return (n, n < 0 ? Marshal.GetLastPInvokeError() : 0);
+            }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct PollFd
+        {
+            public int Fd;
+            public short Events;
+            public short Revents;
         }
 
         private void WarnIfStalled(ReadProgress progress)

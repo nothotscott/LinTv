@@ -1,0 +1,154 @@
+@page
+@model SignalModel
+@{
+    ViewData["Title"] = "Signal";
+}
+
+<h1>Signal meter</h1>
+
+@if (Model.Options.Count == 0)
+{
+    <p>No channels yet. Run a channel scan from the <a href="/">dashboard</a>.</p>
+    return;
+}
+
+<form id="meter" class="card">
+    <p class="muted">
+        Tunes to the channel and samples its signal. This works even if the channel can't lock.
+        The meter holds the tuner while it measures, so it can't run while someone is watching
+        another frequency. Tick <em>keep measuring</em> while adjusting the antenna.
+    </p>
+    <p>
+        <select name="channel" required>
+            @foreach (var (value, label) in Model.Options)
+            {
+                <option value="@value" selected="@(value == Model.Selected)">@label</option>
+            }
+        </select>
+        <label>for <input name="seconds" type="number" min="1" max="30" value="5" style="width:4.5rem"> s</label>
+        <label><input name="repeat" type="checkbox"> keep measuring</label>
+        <button type="submit">Measure</button>
+    </p>
+    <p id="status" class="muted"></p>
+</form>
+
+<div class="grid" id="result" hidden style="margin-top:1rem">
+    <section class="card">
+        <h2>Reception <span id="verdict"></span></h2>
+        <dl>
+            <dt>Locked</dt><dd><span id="locked"></span> of <span id="samples"></span> samples</dd>
+            <dt>Time to lock</dt><dd id="toLock"></dd>
+            <dt>Channel</dt><dd id="where"></dd>
+        </dl>
+        <meter id="lockedMeter" min="0" max="100" low="90" high="99" optimum="100"></meter>
+    </section>
+    <section class="card">
+        <h2>SNR</h2>
+        <dl>
+            <dt>Now</dt><dd id="snrNow"></dd>
+            <dt>Min / avg / max</dt><dd id="snrRange"></dd>
+            <dt>At channel scan</dt><dd id="snrScan"></dd>
+        </dl>
+        <meter id="snrMeter" min="0" max="35" low="15" high="20" optimum="30"></meter>
+    </section>
+    <section class="card">
+        <h2>Strength</h2>
+        <dl>
+            <dt>Now</dt><dd id="strengthNow"></dd>
+            <dt>Min / avg / max</dt><dd id="strengthRange"></dd>
+            <dt>At channel scan</dt><dd id="strengthScan"></dd>
+        </dl>
+        <meter id="strengthMeter" min="0" max="100" low="30" high="50" optimum="100"></meter>
+    </section>
+</div>
+
+<section id="historySection" hidden style="margin-top:1rem">
+    <h2>History</h2>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Time</th><th>Channel</th><th>Locked</th><th>SNR min / avg / max</th><th>Strength avg</th></tr></thead>
+            <tbody id="history"></tbody>
+        </table>
+    </div>
+</section>
+
+@section Scripts {
+<script>
+    // ATSC 8VSB needs roughly 15 dB SNR to decode; a few dB of margin above that is comfortable.
+    const MARGINAL_DB = 15, GOOD_DB = 20, HISTORY_ROWS = 30;
+
+    const form = document.getElementById('meter');
+    const button = form.querySelector('button');
+    const $ = id => document.getElementById(id);
+
+    function verdict(r) {
+        if (r.lockedPercent === 0) return ['No lock', 'bad'];
+        if (r.lockedPercent < 100 || r.snrDb.min < MARGINAL_DB) return ['Unstable', 'bad'];
+        if (r.snrDb.average < GOOD_DB) return ['Marginal', 'warn'];
+        return ['Good', 'good'];
+    }
+
+    function render(r) {
+        const [text, cls] = verdict(r);
+        $('verdict').textContent = `· ${text}`;
+        $('verdict').className = cls;
+        $('locked').textContent = `${r.lockedPercent}%`;
+        $('samples').textContent = r.samples;
+        $('toLock').textContent = r.shared ? 'already tuned (shared with a viewer)'
+            : r.secondsToLock === null ? 'no lock' : `${r.secondsToLock} s`;
+        $('where').textContent = `${r.channel}${r.index ? ` alt ${r.index}` : ''}, RF ${r.rfChannel} (${r.frequencyHz / 1e6} MHz)`;
+        $('lockedMeter').value = r.lockedPercent;
+
+        $('snrNow').textContent = `${r.last.snrDb.toFixed(1)} dB`;
+        $('snrRange').textContent = `${r.snrDb.min} / ${r.snrDb.average} / ${r.snrDb.max} dB`;
+        $('snrScan').textContent = `${r.scanSnrDb} dB`;
+        $('snrMeter').value = r.snrDb.average;
+
+        $('strengthNow').textContent = `${r.last.strengthPercent.toFixed(0)}%`;
+        $('strengthRange').textContent = `${r.strengthPercent.min} / ${r.strengthPercent.average} / ${r.strengthPercent.max}%`;
+        $('strengthScan').textContent = `${r.scanStrengthPercent}%`;
+        $('strengthMeter').value = r.strengthPercent.average;
+        $('result').hidden = false;
+
+        const row = document.createElement('tr');
+        row.innerHTML = `<td>${new Date().toLocaleTimeString()}</td><td>${r.channel}${r.index ? '/' + r.index : ''}</td>` +
+            `<td class="${cls}">${r.lockedPercent}%</td><td>${r.snrDb.min} / ${r.snrDb.average} / ${r.snrDb.max} dB</td>` +
+            `<td>${r.strengthPercent.average}%</td>`;
+        $('history').prepend(row);
+        while ($('history').rows.length > HISTORY_ROWS) $('history').lastElementChild.remove();
+        $('historySection').hidden = false;
+    }
+
+    async function measure() {
+        const [channel, index] = form.channel.value.split('/');
+        const seconds = form.seconds.value;
+        $('status').className = 'muted';
+        $('status').textContent = `Measuring ${channel} for ${seconds} s…`;
+
+        const response = await fetch(`/scan/signal/${channel}/${index}?seconds=${seconds}`, { cache: 'no-store' });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            $('status').className = 'error';
+            $('status').textContent = body.detail ?? body.title ?? `Failed (${response.status})`;
+            return false;
+        }
+        render(body);
+        $('status').textContent = `Last measured ${new Date().toLocaleTimeString()}.`;
+        return true;
+    }
+
+    form.addEventListener('submit', async e => {
+        e.preventDefault();
+        button.disabled = true;
+        try {
+            // Repeat while "keep measuring" stays ticked; stop on the first failure.
+            while (await measure() && form.repeat.checked) { }
+        } catch {
+            $('status').className = 'error';
+            $('status').textContent = 'Could not reach the server.';
+        } finally {
+            button.disabled = false;
+        }
+    });
+</script>
+}

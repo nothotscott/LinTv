@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Options;
 using LinTv.Linux.Driver;
 using LinTv.Core.Services;
@@ -18,7 +20,19 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 
 // Add services to the container.
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddControllers();
+// Enums as names ("LiveView", not 2) in the JSON API. HDHomeRun endpoints use their own options.
+builder.Services.AddControllers()
+    .AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+builder.Services.AddRazorPages();
+
+// Antiforgery and TempData encrypt with Data Protection keys. By default those land in the
+// service user's $HOME/.aspnet (which resolved into /opt/lintv, breaking deploys) and are lost if
+// that isn't writable. Keep them with the rest of the state so they survive deploys and restarts.
+var storageDirectory = builder.Configuration.GetSection(LinTvConfiguration.SectionName)
+    .Get<LinTvConfiguration>()?.StorageDirectory ?? new LinTvConfiguration().StorageDirectory;
+builder.Services.AddDataProtection()
+    .SetApplicationName("LinTv")
+    .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(storageDirectory, "keys")));
 builder.Services.AddOpenApi();
 builder.Services.AddOptions<LinTvConfiguration>()
     .BindConfiguration(LinTvConfiguration.SectionName)
@@ -39,6 +53,7 @@ builder.Services.AddSingleton<IM3uWriter, M3uWriter>();
 builder.Services.AddSingleton<IEpgScanner, EpgScanner>();
 builder.Services.AddSingleton<IXmlTvWriter, XmlTvWriter>();
 builder.Services.AddSingleton<IHdHomeRunLineupService, HdHomeRunLineupService>();
+builder.Services.AddSingleton<ISignalMeter, SignalMeter>();
 builder.Services.AddHostedService<EpgScheduleService>();
 
 // File log sink: registering the provider in DI makes the logging framework pick it up.
@@ -55,5 +70,6 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapControllers();
+app.MapRazorPages();
 
 app.Run();

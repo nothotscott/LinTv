@@ -29,7 +29,7 @@ This is the technical companion to the [README](../README.md). It covers how the
 |---|---|
 | `LinTv.Core` | Everything platform-independent: domain records, the tuner arbiter, scanners, JSON stores, M3U/XMLTV writers, the file log sink, and the MPEG-TS/PSIP parsers (`Mpeg/`). |
 | `LinTv.Linux` | `LinuxDvbTuner`, the only code that talks to the kernel. It uses P/Invoke `open`/`ioctl`/`close` against `libc`. |
-| `LinTv.Api` | ASP.NET Core host. It holds controllers only; all logic lives in Core. |
+| `LinTv.Api` | ASP.NET Core host: API controllers and a small Razor Pages UI (`Pages/`). All logic lives in Core. |
 
 Core has no Linux dependency, so everything except actual tuning can be built and exercised on Windows (see [Testing without the card](#testing-without-the-card)).
 
@@ -58,7 +58,7 @@ All these tables arrive as **sections**, which may span packets. `PsiSectionAsse
 - **The frontend fd stays open for the process lifetime.** Closing it lets the driver power the tuner down and drop the tune.
 - **Reading:** a pass-through demux filter (`DMX_SET_PES_FILTER`, PID `0x2000` = all, output `DMX_OUT_TS_TAP`) makes `dvr0` a plain byte stream of the whole multiplex. The filter lives as long as the demux fd, so it's opened per read and closed in `finally`. Only one reader can have `dvr0` open.
 - **Struct layouts** (`DtvProperty` 76 bytes, ioctl numbers) assume a 64-bit process, and the tuner throws otherwise.
-- **Stall watchdog:** a `dvr0` read blocks rather than failing when data stops, so a timer logs a warning every 5 s with no data.
+- **Stall watchdog:** a timer logs a warning every 5 s with no data. Reads use `poll()` with 500 ms slices on a non-blocking fd, yielding an empty chunk when nothing arrives, so a dead signal can't block a reader: cancellation and deadlines are always checked.
 
 ## Sharing the tuner (`TunerArbiterService`)
 
@@ -66,7 +66,10 @@ There is one physical tuner, so the arbiter decides who gets it:
 
 - **Acquire:** `AcquireAsync(frequency, priority)` tunes and waits for lock if the tuner is idle. If the tuner is already on that frequency, the caller **shares** it; holders are counted. On a different frequency the caller gets `TunerBusyException`, unless it has higher priority, in which case preemption would apply (not implemented yet).
 - **Priorities:** `BackgroundEpg` < `ChannelScan` < `LiveView`.
-- **Release:** every acquire must be paired with `ReleaseAsync(CancellationToken.None)` in a `finally`. The token is `None` because the request token is typically already cancelled when a stream ends, and a skipped release leaves the tuner "busy" forever.
+- **Measuring:** `AcquireForMeasurementAsync` is the same lease as `AcquireAsync` (same busy rules, same `ReleaseAsync`), but it succeeds without a lock, so `SignalMeter` (`/scan/signal/…`) can report on channels too weak to lock. If the tuner is already on that frequency for someone else, it shares the tune instead of retuning (`Shared: true`).
+- **Leases:** `AcquireAsync` returns a `TunerLease`. Every acquire must be paired with `ReleaseAsync(lease)` in a `finally`, and reads linked to `lease.Revoked`.
+- **Sessions and force release:** a session is one tune, from the first lease to the last release. `ForceReleaseAsync` (`POST /stream/disconnect`, the dashboard's Disconnect button) cancels every lease's `Revoked` token and starts a new session. When the revoked holders unwind, their `ReleaseAsync` is recognised as belonging to a dead session and ignored, so it can't decrement the new session's holder count. Releases are also idempotent.
+- **Stall timeout:** streams also end themselves after `StreamStallTimeoutSeconds` without output, which covers a client that never fully connected, or a lost signal.
 
 ## Channel scan (`ChannelScanner`)
 
@@ -131,6 +134,7 @@ Everything lives in `StorageDirectory` (default `/var/lib/lintv`):
 | `guide.json` | EPG scan (merge) | `GuideEvent[]` |
 | `channel-map.json` | You (by hand or `PUT /channel-map`) | Reloaded when its timestamp changes. Comments, trailing commas and any casing are allowed. |
 | `logs/lintv-YYYYMMDD.log` | `FileLoggerProvider` | Daily files, `LogRetentionDays` retention |
+| `keys/key-*.xml` | ASP.NET Data Protection | Encrypt antiforgery tokens and TempData for the web UI. Kept here, not in the service user's `$HOME/.aspnet`, so they survive deploys and restarts. |
 
 The stores cache in memory and write via temp file + rename (`JsonFile.WriteAtomicAsync`), so a crash never leaves a truncated file. Old `channels.json` files without `Index` or signal fields still load, and the missing fields default to 0.
 
@@ -152,5 +156,4 @@ There's no test project yet. The MPEG/PSIP code has been verified with throwaway
 
 - **No preemption:** a live stream can't take the tuner from a scan.
 - **Huffman text:** Huffman-compressed PSIP text is skipped.
-- **Stuck reads:** if a tuner stops delivering data mid-stream, the blocking `dvr0` read can't be cancelled until data arrives. The watchdog makes this visible, but it doesn't recover it.
 - **Discovery:** there's no UDP discovery (port 65001), so clients need the address typed in.

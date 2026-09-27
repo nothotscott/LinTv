@@ -115,12 +115,12 @@ namespace LinTv.Core.Services
             var rf = channels[0].RfChannel;
             var frequencyHz = channels[0].FrequencyHz;
 
-            IDvbTuner tuner;
+            TunerLease lease;
             try
             {
                 // Lowest priority: shares the tuner if a viewer is already on this multiplex,
                 // and backs off if they're on another one.
-                tuner = await TunerArbiter.AcquireAsync(frequencyHz, TunerPriority.BackgroundEpg, ct);
+                lease = await TunerArbiter.AcquireAsync(frequencyHz, TunerPriority.BackgroundEpg, ct);
             }
             catch (Exception ex) when (ex is TunerProblemException or TunerBusyException)
             {
@@ -129,13 +129,15 @@ namespace LinTv.Core.Services
             }
 
             var timeout = TimeSpan.FromSeconds(Config.EpgScanTimeoutSeconds);
+            // A force release (POST /stream/disconnect) revokes the lease and aborts the scan.
+            using var revocable = CancellationTokenSource.CreateLinkedTokenSource(ct, lease.Revoked);
             try
             {
                 var bySource = channels.ToDictionary(c => c.SourceId);
                 var collector = new PsipGuideCollector(bySource.Keys.ToHashSet());
                 Logger.LogDebug("RF {Rf}: collecting guide for {Channels} (up to {Timeout}s)",
                     rf, string.Join(", ", channels.Select(c => c.Id)), timeout.TotalSeconds);
-                bool complete = await CollectAsync(tuner, collector, timeout, ct);
+                bool complete = await CollectAsync(lease.Tuner, collector, timeout, revocable.Token);
 
                 var events = collector.GetEvents()
                     .Select(x => new GuideEvent(
@@ -152,7 +154,7 @@ namespace LinTv.Core.Services
             }
             finally
             {
-                await TunerArbiter.ReleaseAsync(CancellationToken.None);
+                await TunerArbiter.ReleaseAsync(lease);
             }
         }
 

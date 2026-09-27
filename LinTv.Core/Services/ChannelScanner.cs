@@ -130,10 +130,10 @@ namespace LinTv.Core.Services
 
         private async Task<IReadOnlyList<VirtualChannel>> ScanRfChannelAsync(RfChannel rf, CancellationToken ct)
         {
-            IDvbTuner tuner;
+            TunerLease lease;
             try
             {
-                tuner = await TunerArbiter.AcquireAsync(rf.FrequencyHz, TunerPriority.ChannelScan, ct);
+                lease = await TunerArbiter.AcquireAsync(rf.FrequencyHz, TunerPriority.ChannelScan, ct);
             }
             catch (TunerProblemException)
             {
@@ -142,12 +142,15 @@ namespace LinTv.Core.Services
             }
             // TunerBusyException propagates: someone with higher priority holds the tuner.
 
-            var vctTimeout = TimeSpan.FromSeconds(Config.ChannelScanTimeoutSeconds);   
+            var tuner = lease.Tuner;
+            // A force release (POST /stream/disconnect) revokes the lease and aborts the scan.
+            using var revocable = CancellationTokenSource.CreateLinkedTokenSource(ct, lease.Revoked);
+            var vctTimeout = TimeSpan.FromSeconds(Config.ChannelScanTimeoutSeconds);
             try
             {
                 Logger.LogTrace("RF {Rf}: scanning Vct within {Timeout}s", rf.Number, vctTimeout.TotalSeconds);
                 var signalAtLock = tuner.ReadSignalStatus();
-                var vct = await ReadVctAsync(tuner, vctTimeout, ct);
+                var vct = await ReadVctAsync(tuner, vctTimeout, revocable.Token);
 
                 // Two samples a moment apart smooth out a single noisy reading.
                 var signalAfterVct = tuner.ReadSignalStatus();
@@ -184,7 +187,7 @@ namespace LinTv.Core.Services
             }
             finally
             {
-                await TunerArbiter.ReleaseAsync(CancellationToken.None);
+                await TunerArbiter.ReleaseAsync(lease);
             }
         }
 

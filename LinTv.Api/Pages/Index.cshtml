@@ -1,0 +1,144 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Dashboard";
+    string? scheduleText = Model.EpgSchedule is null
+        ? "Automatic EPG scans are off (set LinTv:EpgScanTimes)."
+        : $"Automatic scans at {Model.EpgSchedule}. Next: {Model.NextEpgScan:g}.";
+
+    // Keep in sync with tunerText() in the script below.
+    static string TunerText(TunerState t) => t.Holders == 0
+        ? "Idle"
+        : $"{t.FrequencyHz / 1_000_000} MHz · {t.Priority} · {t.Holders} holder(s) since {t.Since?.ToLocalTime():t}";
+}
+
+<h1>Dashboard</h1>
+
+@if (Model.Message is not null)
+{
+    <div class="message">@Model.Message</div>
+}
+
+<div class="grid">
+    <partial name="_ScanCard" model="@(new ScanCardModel("channels", "Channel scan",
+        "Tunes RF 2–36 and records every channel that locks. Replaces the lineup.",
+        Model.ChannelScan, "Channels found", "ScanChannels", "Start channel scan"))" />
+
+    <partial name="_ScanCard" model="@(new ScanCardModel("epg", "EPG scan",
+        "Reads the broadcast program guide from each frequency in the lineup.",
+        Model.EpgScan, "Events found", "ScanEpg", "Start EPG scan", scheduleText))" />
+
+    <section class="card" data-tuner>
+        <h2>Tuner</h2>
+        <dl>
+            <dt>Status</dt>
+            <dd data-field="tuner">@TunerText(Model.Tuner)</dd>
+        </dl>
+        <p class="muted">
+            Streams end on their own when the client leaves or no data arrives for
+            @Model.Config.StreamStallTimeoutSeconds s. If the tuner is still stuck, disconnect ends
+            everything holding it: streams, scans and signal measurements.
+        </p>
+        <form method="post" asp-page-handler="Disconnect">
+            <button type="submit" disabled="@(Model.Tuner.Holders == 0)">Disconnect</button>
+        </form>
+    </section>
+
+    <section class="card">
+        <h2>Lineup &amp; guide</h2>
+        <dl>
+            <dt>Channels</dt>
+            <dd>
+                <a href="/Channels">@Model.ChannelCount</a>
+                @if (Model.AlternateCount > 0)
+                {
+                    <span class="muted">(+@Model.AlternateCount alternate)</span>
+                }
+                <span class="muted">on @Model.MultiplexCount frequencies</span>
+            </dd>
+            <dt>Guide events</dt>
+            <dd>@Model.GuideEventCount</dd>
+            <dt>Guide until</dt>
+            <dd>@(Model.GuideUntil?.ToLocalTime().ToString("g") ?? "no guide data yet")</dd>
+        </dl>
+        <p class="muted">
+            <a href="/lineup.m3u">lineup.m3u</a> ·
+            <a href="/lineup.json">lineup.json</a> ·
+            <a href="/guide.xml">guide.xml</a>
+        </p>
+    </section>
+
+    <section class="card">
+        <h2>Connect a media server</h2>
+        <dl>
+            <dt>Device</dt>
+            <dd>@Model.Config.FriendlyName <span class="muted">(@Model.Config.DeviceId)</span></dd>
+            <dt>Tuner address</dt>
+            <dd><code>@Model.BaseUrl</code></dd>
+            <dt>XMLTV guide</dt>
+            <dd><code>@Model.BaseUrl/guide.xml</code></dd>
+        </dl>
+        <p class="muted">
+            Jellyfin: Live TV → Tuner Devices → HDHomeRun. Plex: Live TV &amp; DVR → "Don't see your device?".
+            Enter the tuner address by hand.
+        </p>
+    </section>
+</div>
+
+@section Scripts {
+<script>
+    // Poll scan status: quickly while a scan runs, slowly otherwise. When a scan finishes,
+    // reload so the lineup and guide counts are current.
+    const cards = [...document.querySelectorAll('[data-scan]')];
+
+    function when(iso) {
+        return iso ? new Date(iso).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : 'not since startup';
+    }
+
+    async function refresh(card) {
+        const response = await fetch(`/scan/${card.dataset.scan}`, { cache: 'no-store' });
+        const s = await response.json();
+        const field = name => card.querySelector(`[data-field="${name}"]`);
+
+        field('state').textContent = s.inProgress ? `Scanning… ${s.progressPercent}%` : 'Idle';
+        field('found').textContent = s.found;
+        field('last').textContent = when(s.lastCompleted);
+        field('error').textContent = s.lastError ?? '';
+        field('error').hidden = !s.lastError;
+        card.querySelector('progress').value = s.progressPercent;
+        card.querySelector('progress').hidden = !s.inProgress;
+        card.querySelector('button').disabled = s.inProgress;
+
+        const finished = card.dataset.inProgress === 'true' && !s.inProgress;
+        card.dataset.inProgress = s.inProgress;
+        return { busy: s.inProgress, finished };
+    }
+
+    const tunerCard = document.querySelector('[data-tuner]');
+
+    function tunerText(t) {
+        if (!t.holders) return 'Idle';
+        const since = new Date(t.since).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        return `${t.frequencyHz / 1e6} MHz · ${t.priority} · ${t.holders} holder(s) since ${since}`;
+    }
+
+    async function refreshTuner() {
+        const t = await (await fetch('/stream/status', { cache: 'no-store' })).json();
+        tunerCard.querySelector('[data-field="tuner"]').textContent = tunerText(t);
+        tunerCard.querySelector('button').disabled = !t.holders;
+    }
+
+    async function poll() {
+        let busy = false;
+        try {
+            await refreshTuner();
+            const results = await Promise.all(cards.map(refresh));
+            if (results.some(r => r.finished)) { location.reload(); return; }
+            busy = results.some(r => r.busy);
+        } catch { /* server restarting; try again later */ }
+        setTimeout(poll, busy ? 2000 : 15000);
+    }
+
+    setTimeout(poll, cards.some(c => c.dataset.inProgress === 'true') ? 2000 : 15000);
+</script>
+}

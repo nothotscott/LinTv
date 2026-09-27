@@ -157,12 +157,13 @@ Settings live in the `LinTv` section of `/opt/lintv/appsettings.json`:
 | Setting | Meaning |
 |---|---|
 | `Urls` | Listen address. `0.0.0.0` makes it reachable on the LAN. The ASP.NET default, `localhost:5000`, is loopback only. |
-| `StorageDirectory` | Holds the lineup (`channels.json`), the guide (`guide.json`), your channel map (`channel-map.json`) and the logs (`logs/`). |
+| `StorageDirectory` | Holds the lineup (`channels.json`), the guide (`guide.json`), your channel map (`channel-map.json`), the logs (`logs/`) and the web UI's Data Protection keys (`keys/`). |
 | `Adapter` | The `N` in `/dev/dvb/adapterN`. |
 | `LockWaitSeconds` | How long to wait for a signal lock before treating an RF channel as empty. |
 | `ChannelScanTimeoutSeconds` | How long a scan waits for a locked channel's channel table. |
 | `EpgScanTimeoutSeconds` | The most time a guide scan spends per frequency. If it runs out, it keeps what it has collected, usually the next several hours. |
 | `EpgScanTimes` | When to rescan the guide automatically, in the server's local time, e.g. `["11am", "11pm"]`. Also accepts `"11:30pm"` or `"23:00"`. `[]` (the default) turns it off. An invalid entry stops LinTv at startup with an error. |
+| `StreamStallTimeoutSeconds` | A stream that has sent nothing for this long (signal lost, or a client that never fully connected) is ended and the tuner released. Default 15. |
 | `LogRetentionDays` | Days of log files to keep. |
 | `FriendlyName` | The name Plex and Jellyfin show. |
 | `DeviceId` | 8 hex digits identifying the tuner to clients. **Keep it stable**: changing it makes clients see a new device and lose their channel setup. |
@@ -200,8 +201,8 @@ journalctl -u lintv -f
 
 ## Getting started
 
-1. **Scan for channels.** Open `http://<host>:5249/` and click **Start channel scan**. A full scan takes a few minutes. Watch progress at `/scan/channels`, or with `curl http://<host>:5249/scan/channels`.
-2. **Scan the guide.** On the same page, click **Start EPG scan**. It takes up to `EpgScanTimeoutSeconds` per frequency. Stations only broadcast the next half day to a few days of guide data, so set `EpgScanTimes` to keep it fresh. Twice a day is plenty.
+1. **Scan for channels.** Open the web UI at `http://<host>:5249/` and click **Start channel scan** on the dashboard. A full scan takes a few minutes, and the card shows progress as it runs.
+2. **Scan the guide.** On the dashboard, click **Start EPG scan**. It takes up to `EpgScanTimeoutSeconds` per frequency. Stations only broadcast the next half day to a few days of guide data, so set `EpgScanTimes` to keep it fresh. Twice a day is plenty.
 3. **Watch something.** Open `http://<host>:5249/lineup.m3u` in VLC (Media → Open Network Stream) to get a channel list.
 4. **Add it to your media server:**
    - **Jellyfin:** Dashboard → Live TV → Tuner Devices → Add → HDHomeRun, `http://<host>:5249`. Then go to TV Guide Data Providers → Add → XMLTV, `http://<host>:5249/guide.xml`.
@@ -210,6 +211,19 @@ journalctl -u lintv -f
    Clients won't find LinTv on their own yet, so enter the address by hand.
 
 Rerun the channel scan if stations change frequency or number. A stream that returns 503 with "not found … try a channel scan" is the sign. The guide refreshes on the `EpgScanTimes` schedule. You can also start an EPG scan by hand at any time.
+
+## Web UI
+
+Open `http://<host>:5249/` in a browser:
+
+- **Dashboard:** start channel and EPG scans and watch their progress. See what's holding the tuner, and **Disconnect** it if a stream is stuck. It also shows the guide schedule and next run, lineup and guide counts, and the addresses to enter in Jellyfin or Plex.
+- **Channels:** every scanned channel with its broadcast name, mapped name, RF channel, and the signal at scan time (colour-coded by SNR). Each row links to the signal meter and to the stream.
+- **Signal:** a live signal meter. Pick a channel and it tunes, samples for a few seconds, and reports:
+  - lock percentage;
+  - SNR and strength (min/avg/max) against the scan-time readings;
+  - a verdict: *Good*, *Marginal*, *Unstable* or *No lock*.
+
+  Tick **keep measuring** to repeat it while you adjust the antenna. Each run adds a row to a history table.
 
 ## Channel map
 
@@ -239,11 +253,14 @@ To have an AI assistant draft the map for your area, give it [docs/LLM-Channel-M
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /` | Test page: start scans, links to everything below |
+| `GET /`, `/Channels`, `/Signal` | Web UI (see **Web UI**) |
 | `POST /scan/channels`, `GET /scan/channels` | Start a channel scan in the background (409 if one is running) / show its progress |
 | `POST /scan/epg`, `GET /scan/epg` | Start a guide scan / show its progress |
+| `GET /scan/signal/{major}.{minor}/{index?}?seconds=N` | Tune to a channel and sample its signal for N seconds (default 5, max 30): lock %, strength and SNR min/avg/max, time to lock, and the scan-time readings for comparison. Works on channels too weak to lock. Holds the tuner, so it returns 409 while the tuner is busy on another frequency. |
 | `GET /stream/{major}.{minor}` | Live stream of a channel, e.g. `/stream/8.1` (the best-signal copy) |
 | `GET /stream/{major}.{minor}/{index}` | A specific copy of a channel received on several frequencies, e.g. `/stream/10.1/1` |
+| `GET /stream/status` | What holds the tuner: frequency, priority, holder count, since when |
+| `POST /stream/disconnect` | Force-end everything holding the tuner (stuck streams, scans, measurements) |
 | `GET /lineup.m3u` | Channels as an M3U playlist |
 | `GET /guide.xml` | Program guide as XMLTV |
 | `GET /discover.json`, `/lineup.json`, `/lineup_status.json` | HDHomeRun emulation for Plex/Jellyfin |
@@ -280,9 +297,10 @@ Messages worth knowing:
 
 **Common problems:**
 
+- **A station is hard to lock or keeps breaking up:** check it with `curl "http://<host>:5249/scan/signal/44.1?seconds=15"`. `lockedPercent` below 100, or an SNR range that dips below about 15 dB, means marginal reception. Compare against `scanSnrDb`, and try the antenna position or an amplifier. If the channel is received on several frequencies, check the alternates (`/scan/signal/44.1/1`) too.
 - **`Permission denied` on `frontend0`:** the user isn't in the `video` group, or hasn't logged in again since being added.
 - **Listening on `localhost:5000`:** `appsettings.json` wasn't found or has no `Urls` setting.
-- **"Tuner in use":** there's one tuner. A stream on one frequency blocks scans and streams on other frequencies until it ends.
+- **"Tuner in use":** there's one tuner. A stream on one frequency blocks scans and streams on other frequencies until it ends. The dashboard's Tuner card shows what holds it (also `GET /stream/status`). If it's stuck, for example on a stream Jellyfin abandoned, click **Disconnect** or run `curl -X POST http://<host>:5249/stream/disconnect`. That ends every stream, scan and measurement holding the tuner.
 - **Missing guide text for a station:** it may send compressed text, which isn't supported yet (see [ABOUT](docs/ABOUT.md#known-limitations--next-steps)).
 
 ## Development

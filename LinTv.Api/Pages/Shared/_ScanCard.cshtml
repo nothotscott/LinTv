@@ -1,0 +1,25 @@
+@model ScanCardModel
+@* One scan (channels or EPG). data-scan / data-field hooks are what the dashboard's poller updates. *@
+<section class="card" data-scan="@Model.Kind" data-in-progress="@(Model.Status.InProgress ? "true" : "false")">
+    <h2>@Model.Title</h2>
+    <p class="muted">@Model.Description</p>
+    <dl>
+        <dt>Status</dt>
+        <dd data-field="state">@(Model.Status.InProgress ? $"Scanning… {Model.Status.ProgressPercent}%" : "Idle")</dd>
+        <dt>@Model.FoundLabel</dt>
+        <dd data-field="found">@Model.Status.Found</dd>
+        <dt>Last completed</dt>
+        <dd data-field="last" data-utc="@Model.Status.LastCompleted?.ToString("o")">
+            @(Model.Status.LastCompleted?.ToLocalTime().ToString("g") ?? "not since startup")
+        </dd>
+    </dl>
+    <progress max="100" value="@Model.Status.ProgressPercent" hidden="@(!Model.Status.InProgress)"></progress>
+    <p class="error" data-field="error" hidden="@(Model.Status.LastError is null)">@Model.Status.LastError</p>
+    @if (Model.Extra is not null)
+    {
+        <p class="muted">@Model.Extra</p>
+    }
+    <form method="post" asp-page-handler="@Model.Handler">
+        <button type="submit" disabled="@Model.Status.InProgress">@Model.ButtonText</button>
+    </form>
+</section>

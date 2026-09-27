@@ -1,0 +1,61 @@
+@page
+@model ChannelsModel
+@{
+    ViewData["Title"] = "Channels";
+}
+
+<h1>Channels</h1>
+
+@if (Model.Channels.Count == 0)
+{
+    <p>No channels yet. Run a channel scan from the <a href="/">dashboard</a>.</p>
+    return;
+}
+
+<p class="muted">
+    Signal is as measured during the last channel scan. Use <a href="/Signal">Signal</a> for a live reading.
+    Channels received on several frequencies are listed once per frequency, best signal first.
+    Only the primary is published to clients.
+</p>
+
+<div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th>Channel</th>
+                <th>Broadcast name</th>
+                <th>Mapped as</th>
+                <th>RF</th>
+                <th>SNR</th>
+                <th>Strength</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var c in Model.Channels)
+            {
+                var mapped = Model.MappedNames.GetValueOrDefault(c.Id);
+                var snrClass = c.SignalSnrDb >= 20 ? "good" : c.SignalSnrDb >= 15 ? "warn" : "bad";
+                var route = c.IsPrimary ? c.Id : $"{c.Id}/{c.Index}";
+                <tr>
+                    <td>
+                        <strong>@c.Id</strong>
+                        @if (!c.IsPrimary)
+                        {
+                            <span class="muted">alt @c.Index</span>
+                        }
+                    </td>
+                    <td>@c.ShortName</td>
+                    <td>@(mapped is { Length: > 0 } ? string.Join(", ", mapped) : "")</td>
+                    <td>@c.RfChannel <span class="muted">(@(c.FrequencyHz / 1_000_000) MHz)</span></td>
+                    <td class="@snrClass">@c.SignalSnrDb.ToString("F1") dB</td>
+                    <td>@c.SignalStrengthPercent.ToString("F0")%</td>
+                    <td>
+                        <a href="/Signal?channel=@c.Id&index=@c.Index">Signal</a> ·
+                        <a href="/stream/@route" title="Open in VLC or another player">Stream</a>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>

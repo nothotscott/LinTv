@@ -26,6 +26,10 @@ namespace LinTv.Core.Configuration
         /// Parsed by DailySchedule and validated at startup.
         public string[] EpgScanTimes { get; set; } = [];
 
+        /// A stream that has sent no data for this long (signal lost, or a client that never
+        /// really connected) is ended and its tuner released.
+        public int StreamStallTimeoutSeconds { get; set; } = 15;
+
         /// Daily log files in {StorageDirectory}/logs older than this are deleted.
         public int LogRetentionDays { get; set; } = 7;
 

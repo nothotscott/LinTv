@@ -1,9 +1,10 @@
+using LinTv.Core.Configuration;
 using LinTv.Core.Domain;
-using LinTv.Core.Driver;
 using LinTv.Core.Mpeg;
 using LinTv.Core.Services;
 using LinTv.Core.Stores;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 using System.Buffers;
 using System.Diagnostics;
 
@@ -17,16 +18,20 @@ namespace LinTv.Api.Controllers
 
         public ILogger Logger { private get; set; }
 
+        public LinTvConfiguration Config { private get; init; }
+
         public ITunerArbiterService TunerArbiter { private get; init; }
 
         public IChannelStore ChannelStore { private get; init; }
 
         public StreamController(
             ILogger<StreamController> logger,
+            IOptions<LinTvConfiguration> config,
             ITunerArbiterService tunerArbiter,
             IChannelStore channelStore)
         {
             Logger = logger;
+            Config = config.Value;
             TunerArbiter = tunerArbiter;
             ChannelStore = channelStore;
         }
@@ -42,16 +47,31 @@ namespace LinTv.Api.Controllers
             return await StreamProgramAsync(virtualChannel, ct);
         }
 
+        /// Who holds the tuner right now.
+        [HttpGet("stream/status")]
+        public TunerState Status() => TunerArbiter.State;
+
+        /// Ends whatever holds the tuner: streams, scans, signal measurements. For a stream a client
+        /// abandoned without disconnecting cleanly. Returns the number of leases revoked.
+        [HttpPost("stream/disconnect")]
+        public async Task<IActionResult> Disconnect()
+        {
+            var before = TunerArbiter.State;
+            var revoked = await TunerArbiter.ForceReleaseAsync();
+            Logger.LogWarning("Tuner force-disconnected by {Client}", HttpContext.Connection.RemoteIpAddress);
+            return Ok(new { revoked, before.FrequencyHz, before.Priority });
+        }
+
         private async Task<IActionResult> StreamProgramAsync(VirtualChannel channel, CancellationToken ct)
         {
             var client = HttpContext.Connection.RemoteIpAddress;
             Logger.LogInformation("Stream {Id}/{Index} (RF {Rf}, program {Program}) requested by {Client}",
                 channel.Id, channel.Index, channel.RfChannel, channel.ProgramNumber, client);
 
-            IDvbTuner tuner;
+            TunerLease lease;
             try
             {
-                tuner = await TunerArbiter.AcquireAsync(channel.FrequencyHz, TunerPriority.LiveView, ct);
+                lease = await TunerArbiter.AcquireAsync(channel.FrequencyHz, TunerPriority.LiveView, ct);
             }
             catch (Exception ex)
             {
@@ -60,8 +80,13 @@ namespace LinTv.Api.Controllers
             }
 
             var elapsed = Stopwatch.StartNew();
+            var sinceLastWrite = Stopwatch.StartNew();
+            var stallTimeout = TimeSpan.FromSeconds(Config.StreamStallTimeoutSeconds);
             long bytesSent = 0;
             var outcome = "ended";
+
+            // Ends on client disconnect (ct) or on a force release (lease.Revoked).
+            using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct, lease.Revoked);
 
             Response.ContentType = "video/mp2t";
             try
@@ -72,8 +97,9 @@ namespace LinTv.Api.Controllers
                 var deadline = DateTime.UtcNow + ProgramTimeout;
                 bool loggedStreams = false;
 
-                // ct is RequestAborted: closing the player cancels the read loop and releases the demux.
-                await foreach (var chunk in tuner.ReadTransportStreamAsync(ct))
+                // Chunks may be empty: the tuner yields an idle tick at least every ~500 ms when no
+                // data arrives, which is what lets the deadline and stall checks below run.
+                await foreach (var chunk in lease.Tuner.ReadTransportStreamAsync(stop.Token))
                 {
                     framer.Push(chunk.Span, packet => demuxer.Process(packet, output));
 
@@ -86,7 +112,7 @@ namespace LinTv.Api.Controllers
                             Logger.LogWarning("Program {Program} ({Id}) not in the PAT on RF {Rf} after {Seconds}s",
                                 channel.ProgramNumber, channel.Id, channel.RfChannel, ProgramTimeout.TotalSeconds);
                             return Problem(
-                                $"Program {channel.ProgramNumber} ({channel.Id}) not found on RF {channel.RfChannel}; try a channel scan",
+                                $"Program {channel.ProgramNumber} ({channel.Id}) not found on RF {channel.RfChannel}; weak signal, or try a channel scan",
                                 statusCode: StatusCodes.Status503ServiceUnavailable);
                         }
                         continue;
@@ -99,16 +125,28 @@ namespace LinTv.Api.Controllers
                             elapsed.ElapsedMilliseconds, string.Join(", ", demuxer.StreamPids.Order().Select(p => $"0x{p:X4}")));
                     }
 
-                    if (output.WrittenCount == 0) continue;
-                    await Response.Body.WriteAsync(output.WrittenMemory, ct);
+                    if (output.WrittenCount == 0)
+                    {
+                        // Signal lost mid-stream: end it rather than hold the tuner for a client
+                        // that is only receiving silence.
+                        if (sinceLastWrite.Elapsed > stallTimeout)
+                        {
+                            outcome = $"stalled (no data for {stallTimeout.TotalSeconds:F0}s)";
+                            break;
+                        }
+                        continue;
+                    }
+
+                    await Response.Body.WriteAsync(output.WrittenMemory, stop.Token);
                     bytesSent += output.WrittenCount;
                     output.ResetWrittenCount();
+                    sinceLastWrite.Restart();
                 }
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (stop.IsCancellationRequested)
             {
-                // Client disconnected -- the normal way a stream ends.
-                outcome = "client disconnected";
+                // The normal ways a stream ends.
+                outcome = ct.IsCancellationRequested ? "client disconnected" : "force-disconnected";
             }
             catch (Exception ex)
             {
@@ -117,13 +155,14 @@ namespace LinTv.Api.Controllers
             }
             finally
             {
-                // Not ct: it's already cancelled here, and the lease must be returned regardless.
-                await TunerArbiter.ReleaseAsync(CancellationToken.None);
+                await TunerArbiter.ReleaseAsync(lease);
                 Logger.LogInformation("Stream {Id}/{Index} for {Client} {Outcome} after {Seconds:F0}s ({MegaBytes:F1} MB, {Mbps:F1} Mbps)",
                     channel.Id, channel.Index, client, outcome, elapsed.Elapsed.TotalSeconds, bytesSent / 1_000_000.0,
                     elapsed.Elapsed.TotalSeconds > 0 ? bytesSent * 8 / 1_000_000.0 / elapsed.Elapsed.TotalSeconds : 0);
             }
 
+            // A force release after data was sent can't become an error response; just end the body.
+            if (lease.Revoked.IsCancellationRequested) HttpContext.Abort();
             return new EmptyResult();
         }
     }

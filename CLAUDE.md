@@ -11,7 +11,7 @@ LinTv is an HDHomeRun-compatible network tuner. It runs as an ASP.NET Core servi
 |---|---|
 | `LinTv.Core` | All platform-independent logic: `Domain/` records, `Services/` (arbiter, scanners), `Stores/` (JSON persistence), `Writers/` (M3U, XMLTV, `ChannelUrls`), `Mpeg/` (TS framing, PSI/PSIP parsing, `ProgramDemuxer`), `Logging/` (file sink) |
 | `LinTv.Linux` | `LinuxDvbTuner` only: P/Invoke `open`/`ioctl`/`close` on `/dev/dvb`. `AllowUnsafeBlocks` is on. |
-| `LinTv.Api` | Host, DI wiring (`Program.cs`, including options validation and hosted services) and thin attribute-routed controllers. HDHomeRun DTOs and `HdHomeRunJson` live in Core (`Domain/HdHomeRunModels.cs`), and `lineup.json` is built by `Services/HdHomeRunLineupService`. |
+| `LinTv.Api` | Host, DI wiring (`Program.cs`, including options validation and hosted services), thin attribute-routed controllers, and the Razor Pages UI (`Pages/`: Dashboard, Channels, Signal). HDHomeRun DTOs and `HdHomeRunJson` live in Core (`Domain/HdHomeRunModels.cs`), and `lineup.json` is built by `Services/HdHomeRunLineupService`. |
 
 The dev machine is Windows. The deploy target is Linux x64.
 
@@ -41,10 +41,11 @@ $env:LinTv__StorageDirectory = "$env:TEMP\lintv"; dotnet run --project LinTv.Api
 - **Stores:** new JSON stores use `JsonFile.ReadAsync` / `WriteAtomicAsync` and live in `StorageDirectory`, with an in-memory cache behind a `SemaphoreSlim`.
 - **Logging:** structured templates. `Information` for lifecycle events (scan and stream start/end), `Debug`/`Trace` for tuner and arbiter internals, `Warning` for "something is stuck". Don't log per TS chunk.
 - **Config:** new settings go on `LinTvConfiguration` with a sensible default, plus `appsettings.json` and the README's config table.
+- **UI (`Pages/`):** pages read Core services directly in their `PageModel`s, and actions are form POSTs to page handlers (antiforgery on, then redirect back). JavaScript is limited to polling status and running the signal meter via the JSON API (`/scan/...`). CSS lives in `Shared/_Layout.cshtml`. No static files, bundler or frameworks.
 
 ## Gotchas (each has bitten once)
 
-- **Arbiter leases:** every `TunerArbiter.AcquireAsync` needs `ReleaseAsync(CancellationToken.None)` in a `finally`. Never pass the request token: it's already cancelled when a client disconnects, and a skipped release leaves the tuner "busy" forever.
+- **Arbiter leases:** `AcquireAsync` returns a `TunerLease`. Link your reads to `lease.Revoked` (with `CreateLinkedTokenSource(ct, lease.Revoked)`), and call `ReleaseAsync(lease)` in a `finally`. The release is idempotent and ignores leases revoked by `ForceReleaseAsync`, so a stuck holder that finally unwinds can't corrupt the next session. A skipped release leaves the tuner "busy" until someone disconnects it.
 - **Response headers:** set them (e.g. `Content-Type`) **before** the first `Response.Body` write. After that they're read-only and the next write throws.
 - **Unique ids for clients:** `lineup.json`, `lineup.m3u`, `guide.xml` and the EPG scan use **primaries only** (`VirtualChannel.IsPrimary`, i.e. `Index == 0`). Clients need `GuideNumber` / `tvg-id` / XMLTV ids to be unique. Alternates are reachable only at `/stream/{major}.{minor}/{index}`.
 - **HDHomeRun JSON:** use `HdHomeRunJson.Options` (PascalCase, nulls omitted) for anything HDHomeRun-shaped. Clients match key names exactly.
@@ -53,10 +54,11 @@ $env:LinTv__StorageDirectory = "$env:TEMP\lintv"; dotnet run --project LinTv.Api
 - **`DeviceId` must never change by default:** clients key the device, and the user's channel setup, on it.
 - **Keep URLs in sync:** stream and guide URLs come from `ChannelUrls`. Change it together with the `StreamController` / `GuideController` routes.
 - **Content root:** it's `AppContext.BaseDirectory` (in `Program.cs`), so `appsettings.json` is found no matter where `dotnet` is started. Don't remove this.
+- **Data Protection keys:** they go to `StorageDirectory/keys` (`Program.cs`). Without that, ASP.NET writes them to `$HOME/.aspnet/DataProtection-Keys`, which for the `lintv` user landed inside `/opt/lintv`. The files were owned by `lintv`, so `publish.ps1` (running as the deploy user) couldn't empty the directory. Nothing the service writes at runtime may go under `/opt/lintv`.
 - **Case matters on the server:** Linux is case-sensitive and the names are `LinTv.*`, not `LinTV.*`. The repo folder itself is `LinTV`.
 - **Struct layouts:** `LinuxDvbTuner` layouts (`DtvProperty` = 76 bytes, `DmxPesFilterParams`) and ioctl numbers are 64-bit-specific. Recheck them against `linux/dvb/frontend.h` / `dmx.h` before changing.
 - **Tuner lifetime:** the frontend fd stays open for the process lifetime (closing it drops the tune), and only one reader can hold `dvr0`.
-- **`dvr0` reads block:** they can't be cancelled while no data arrives. The watchdog in `ReadTransportStreamAsync` logs this. Don't "fix" it by closing fds from another thread without care.
+- **`dvr0` is read non-blocking with `poll()`:** 500 ms slices, yielding **empty chunks** as idle ticks. Consumers must tolerate empty chunks, and use them to check deadlines. Never go back to a blocking `read()`/`FileStream`: with a dead signal it never returns, cancellation is never seen, and the tuner stays held forever (only one reader can have `dvr0` open).
 
 ## Skills
 

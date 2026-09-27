@@ -27,9 +27,10 @@ Filter the log for warnings and errors first: `grep -E "\[(WRN|ERR|CRT)\]"`. The
 |---|---|
 | `No data from dvr0 for Ns -- tuner stalled or signal lost?` | Stream open, no packets. `locked False` or a low SNR means reception. Locked but no data means a driver or tuner hang, so suggest a service restart and check `dmesg` for cx23885 errors. |
 | `Waited Ns for tuner gate` | A long tune, or a caller holding the gate. Check whether a scan was running at the same time. |
-| `Tuner busy: ...` / 503 `Tuner in use` | Expected: there's one tuner. Something else holds it on another frequency. |
+| `Tuner busy: ...` / 503 `Tuner in use` | Expected: there's one tuner. Check `curl -s "$H/stream/status"` for what holds it and since when. If it has been held long after anyone was watching, it's a stuck stream: with the user's OK, `curl -s -X POST "$H/stream/disconnect"`. |
 | `No lock after N ms (strength X%, SNR Y dB)` | Strength near 0 means no signal on that RF, or the antenna. Some strength but low SNR means marginal reception. |
 | `Program N (...) not in the PAT` | The station renumbered or moved, so the user should rerun the channel scan. |
+| Weak or flapping channel (user report) | With the user's OK (it takes the tuner for a few seconds), run `curl -s "$H/scan/signal/{major}.{minor}?seconds=15"`. `lockedPercent` < 100 or `snrDb.min` well below `scanSnrDb` means marginal reception, which is an antenna issue, not code. |
 | `Tuner released with no holders` | A code bug: an acquire/release mismatch. Find the caller in the preceding lines. |
 | `locked, but no VCT within Ns` | Weak signal, or `ChannelScanTimeoutSeconds` is too short. |
 | `EPG ... partial, stopped after Ns` | Normal for far-future data. If the near-term guide is missing too, raise `EpgScanTimeoutSeconds`. |
