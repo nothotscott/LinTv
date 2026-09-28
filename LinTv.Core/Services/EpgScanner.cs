@@ -2,7 +2,7 @@ using LinTv.Core.Configuration;
 using LinTv.Core.Domain;
 using LinTv.Core.Driver;
 using LinTv.Core.Exceptions;
-using LinTv.Core.Mpeg;
+using LinTv.Mpeg;
 using LinTv.Core.Stores;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -147,7 +147,11 @@ namespace LinTv.Core.Services
                     .Select(x => new GuideEvent(
                         bySource[x.Event.SourceId].Id, x.Event.EventId,
                         x.Start, TimeSpan.FromSeconds(x.Event.LengthSeconds),
-                        x.Event.Title!, x.Description))
+                        x.Event.Title!, x.Description,
+                        x.Event.Details.Genres,
+                        x.Event.Details.Ratings.Select(r => new GuideRating(r.System, r.Value)).ToList(),
+                        x.Event.Details.Premiere, x.Event.Details.Repeat,
+                        x.Event.Details.Captions, x.Event.Details.Audio))
                     .ToList();
 
                 Logger.LogInformation(

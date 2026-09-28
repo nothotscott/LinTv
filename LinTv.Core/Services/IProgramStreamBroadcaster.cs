@@ -1,4 +1,4 @@
-namespace LinTv.Core.Mpeg
+namespace LinTv.Core.Services
 {
     /// The one way to read the tuned multiplex. The device allows a single dvr0 reader, so every
     /// consumer (viewers, scanners) subscribes here and shares one read of the current tune.

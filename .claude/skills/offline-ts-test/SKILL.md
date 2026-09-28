@@ -1,6 +1,6 @@
 ---
 name: offline-ts-test
-description: Verify LinTv's MPEG-TS / PSI / PSIP code (LinTv.Core/Mpeg) without a tuner by feeding synthetic packets through it with a .NET 10 file-based app. Use after changing the framer, section assembler, VCT/MGT/EIT/ETT/STT parsers, PsipGuideCollector or ProgramDemuxer.
+description: Verify LinTv's MPEG-TS / PSI / PSIP code (the LinTv.Mpeg project) without a tuner by feeding synthetic packets through it with a .NET 10 file-based app. Use after changing the framer, section assembler, VCT/MGT/EIT/ETT/STT parsers, PsipGuideCollector or ProgramDemuxer.
 ---
 
 # Offline MPEG/PSIP test
@@ -10,7 +10,7 @@ There's no test project, and the tuner only exists on the server. Instead, write
 ## Header (both lines are required)
 
 ```csharp
-#:project D:/Source/repos/LinTV/LinTv.Core/LinTv.Core.csproj
+#:project D:/Source/repos/LinTV/LinTv.Mpeg/LinTv.Mpeg.csproj
 #:property PublishAot=false
 ```
 
@@ -21,7 +21,7 @@ Run it with `dotnet run test.cs`.
 ## Helpers
 
 ```csharp
-using LinTv.Core.Mpeg;
+using LinTv.Mpeg;
 
 // Long-form section: ext = table_id_extension (TSID, program_number or source_id), version 0-31.
 static byte[] Section(byte tableId, ushort ext, byte version, byte sec, byte last, byte[] body)
@@ -62,5 +62,6 @@ Casting a PID constant to `byte` needs `unchecked(...)`, because constant overfl
 - **Rejection:** a corrupted byte must fail the CRC and produce no section. Also cover a duplicate or out-of-order continuity counter.
 - **Order:** tables arriving before their parent (EIT before MGT, ES before PMT) must be ignored.
 - **Version changes:** a new PAT/PMT version, and for the demuxer, a PMT that moves to a new PID.
+- **Huffman text (`PsipHuffman`):** A/65 Annex F, Figure F2 is a known answer. With the title table (compression type 1), the 39 bits `010 0 0 01 10010100 01101110 010 00010011 01 010` (zero-padded to bytes `43 28 DC 84 D4`) decode to `The next`. That covers the Terminate tree, ESC, a raw 8-bit character and the end code.
 
 Print `want:` next to each actual value so a regression is obvious. Report the results to the user; don't commit the script.

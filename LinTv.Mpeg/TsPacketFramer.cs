@@ -1,4 +1,4 @@
-namespace LinTv.Core.Mpeg
+namespace LinTv.Mpeg
 {
     public delegate void TsPacketHandler(ReadOnlySpan<byte> packet);
 

@@ -1,7 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
-namespace LinTv.Core.Mpeg
+namespace LinTv.Mpeg
 {
     /// One entry of an ATSC A/65 Virtual Channel Table.
     public sealed record VctChannel(

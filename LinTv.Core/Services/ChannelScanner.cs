@@ -2,7 +2,7 @@ using LinTv.Core.Configuration;
 using LinTv.Core.Domain;
 using LinTv.Core.Driver;
 using LinTv.Core.Exceptions;
-using LinTv.Core.Mpeg;
+using LinTv.Mpeg;
 using LinTv.Core.Stores;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;

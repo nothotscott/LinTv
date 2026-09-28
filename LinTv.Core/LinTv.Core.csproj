@@ -12,4 +12,8 @@
     <PackageReference Include="Microsoft.Extensions.Logging" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\LinTv.Mpeg\LinTv.Mpeg.csproj" />
+  </ItemGroup>
+
 </Project>

@@ -27,7 +27,8 @@ This is the technical companion to the [README](../README.md). It covers how the
 
 | Project | Contents |
 |---|---|
-| `LinTv.Core` | Everything platform-independent: domain records, the tuner arbiter, scanners, JSON stores, M3U/XMLTV writers, the file log sink, and the MPEG-TS/PSIP parsers (`Mpeg/`). |
+| `LinTv.Core` | Everything platform-independent: domain records, the tuner arbiter, scanners, JSON stores, M3U/XMLTV writers and the file log sink. |
+| `LinTv.Mpeg` | The MPEG-TS/PSIP wire formats: framer, section assembler, PSIP tables and descriptors, guide collector and program demuxer. No dependencies. |
 | `LinTv.Linux` | `LinuxDvbTuner`, the only code that talks to the kernel. It uses P/Invoke `open`/`ioctl`/`close` against `libc`. |
 | `LinTv.Api` | ASP.NET Core host: API controllers and a small Razor Pages UI (`Pages/`). All logic lives in Core. |
 
@@ -57,7 +58,7 @@ All these tables arrive as **sections**, which may span packets. `PsiSectionAsse
 - **Signal:** strength and SNR come from the legacy `FE_READ_SIGNAL_STRENGTH`/`FE_READ_SNR` ioctls. Their units are driver-specific: the HVR-1800's s5h1409 demod gives strength 0–65535 and SNR in tenths of a dB.
 - **The frontend fd stays open for the process lifetime.** Closing it lets the driver power the tuner down and drop the tune.
 - **Reading:** a pass-through demux filter (`DMX_SET_PES_FILTER`, PID `0x2000` = all, output `DMX_OUT_TS_TAP`) makes `dvr0` a plain byte stream of the whole multiplex. The filter lives as long as the demux fd, so it's opened per read and closed in `finally`. Only one reader can have `dvr0` open, so the multiplex is read once and shared (next point).
-- **Sharing the read (`ProgramStreamBroadcaster`, in `Core/Mpeg`):** it is the single reader of `IDvbTuner.ReadTransportStreamAsync`, and all consumers go through it.
+- **Sharing the read (`ProgramStreamBroadcaster`, in `Core/Services`):** it is the single reader of `IDvbTuner.ReadTransportStreamAsync`, and all consumers go through it.
   - **One pump:** the first subscriber starts a pump, and later subscribers attach to it. Each gets every chunk, including idle ticks, in its own bounded backlog (256 chunks, about 5 s). A reader that falls behind loses chunks, with a warning, instead of stalling the others.
   - **Shutdown:** the pump stops when the last reader leaves. A new reader arriving mid-shutdown waits for `dvr0` to close rather than hitting `EBUSY`. Read errors are passed to every reader.
   - **Two entry points:** `ReadMultiplexAsync()` gives the raw multiplex (used by the channel and EPG scanners). `StreamProgramAsync(program)` adds a per-subscriber framer and `ProgramDemuxer` and yields single-program TS. It throws `ProgramNotFoundException` before yielding anything if the PAT doesn't list the program in 5 s, and ends after `StreamStallTimeoutSeconds` without output. `StreamController` is left with the lease, HTTP and logging.
@@ -109,7 +110,9 @@ The same `major.minor` can be received on several RFs, such as a translator or a
 
 - **Collecting:** the scanner tunes each multiplex that has a primary channel, at `BackgroundEpg` priority. It skips a multiplex with a warning if the tuner is busy elsewhere, and shares the tuner if a viewer is on the same one. `PsipGuideCollector` starts on `0x1FFB`, learns the EIT/ETT PIDs from the MGT, and follows them.
 - **Done when:** every EIT listed in the MGT is complete for every wanted `source_id`, and every event that points at an ETT has its text. Or `EpgScanTimeoutSeconds` runs out, in which case the partial data is kept; the near-term EITs arrive first.
-- **Text:** titles and descriptions are ATSC *multiple string structures*. English is preferred. Huffman-compressed strings (A/65 Annex C) aren't decoded yet and are skipped.
+- **Categories and ratings:** each EIT event carries descriptors. The genre descriptor (`0xAB`) holds A/65 Table 6.20 codes, written to XMLTV as `<category>` ("Movie", "News", "Sports", "Children"...). Jellyfin and Plex sort programmes into movies, news, sports and kids by these. The content advisory descriptor (`0x87`) becomes `<rating>`: US ratings (region 1) are decoded from the CEA-766 dimensions into `VCHIP` (TV-Y…TV-MA) and `MPAA` (G…NC-17) values. Other regions use the broadcaster's short rating text.
+- **Text:** titles and descriptions are ATSC *multiple string structures*. English is preferred. Segments may be Huffman-compressed (A/65 Annex C, compression types 1 for titles and 2 for descriptions); `PsipHuffman` decodes them with the spec's decode tables C5 and C7. Those tables were extracted from the A/65:2013 PDF and cross-checked against the encode tables C4 and C6: every code decodes to its symbol.
+- **Airing flags, captions and audio:** the "Premier" and "Repeat" genre codes describe the airing, not the programme, so they become XMLTV `<premiere/>` and `<previously-shown/>` instead of categories. A caption service descriptor (`0x86`) means the event has closed captions (`<subtitles type="teletext"/>`). The AC-3 audio descriptor (`0x81`, A/52 Annex A) gives the channel layout: `<stereo>` is mono, bilingual (1+1), stereo, dolby (Dolby Surround over two channels) or surround (more than two). With several audio services, the widest wins.
 - **Merging into `guide.json`:** per channel, new events replace stored events that start inside the window the new events cover. This handles reschedules and cancellations. Events that ended more than 6 h ago are pruned.
 
 ### Scheduled scans (`EpgScheduleService`)
@@ -178,5 +181,5 @@ There's no test project yet. The MPEG/PSIP code has been verified with throwaway
 ## Known limitations / next steps
 
 - **No preemption:** a live stream can't take the tuner from a scan.
-- **Huffman text:** Huffman-compressed PSIP text is skipped.
+- **E-AC-3 audio:** the E-AC-3 audio descriptor (A/52 Annex G) isn't read, so events with only E-AC-3 audio have no `<audio>`.
 - **Discovery:** there's no UDP discovery (port 65001), so clients need the address typed in.

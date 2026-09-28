@@ -1,4 +1,4 @@
-namespace LinTv.Core.Mpeg
+namespace LinTv.Mpeg
 {
     /// Collects guide data from one multiplex. It starts on the PSIP base PID and, once the
     /// MGT arrives, also follows the EIT/ETT PIDs it lists. Feed it every TS packet.

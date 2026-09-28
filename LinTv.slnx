@@ -2,4 +2,5 @@
   <Project Path="LinTv.Api/LinTv.Api.csproj" />
   <Project Path="LinTv.Core/LinTv.Core.csproj" />
   <Project Path="LinTv.Linux/LinTv.Linux.csproj" />
+  <Project Path="LinTv.Mpeg/LinTv.Mpeg.csproj" Id="fe281e7c-7e42-4bed-9336-a4fbb4709681" />
 </Solution>

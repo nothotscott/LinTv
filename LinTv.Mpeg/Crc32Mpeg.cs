@@ -1,4 +1,4 @@
-namespace LinTv.Core.Mpeg
+namespace LinTv.Mpeg
 {
     /// CRC-32/MPEG-2 (poly 0x04C11DB7, init 0xFFFFFFFF, no reflection, no final XOR).
     /// Computed over a whole section including its trailing CRC_32, a valid section yields 0.

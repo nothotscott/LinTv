@@ -1,4 +1,5 @@
 using LinTv.Core.Domain;
+using LinTv.Mpeg;
 using System.Globalization;
 using System.Text;
 using System.Xml;
@@ -66,6 +67,43 @@ namespace LinTv.Core.Writers
                         xml.WriteEndElement();
                     }
 
+                    // The DTD fixes element order: desc, category, audio, previously-shown,
+                    // premiere, subtitles, rating.
+                    foreach (var category in e.Categories ?? [])
+                    {
+                        xml.WriteStartElement("category");
+                        xml.WriteAttributeString("lang", "en");
+                        xml.WriteString(Clean(category));
+                        xml.WriteEndElement();
+                    }
+
+                    if (e.Audio is { } audio)
+                    {
+                        xml.WriteStartElement("audio");
+                        xml.WriteElementString("stereo", StereoValue(audio));
+                        xml.WriteEndElement();
+                    }
+
+                    // Jellyfin and Plex flag reruns and premieres from these.
+                    if (e.Repeat) xml.WriteElementString("previously-shown", null);
+                    if (e.Premiere) xml.WriteElementString("premiere", null);
+
+                    // Closed captions: XMLTV has no caption type, and grabbers use "teletext".
+                    if (e.Captions)
+                    {
+                        xml.WriteStartElement("subtitles");
+                        xml.WriteAttributeString("type", "teletext");
+                        xml.WriteEndElement();
+                    }
+
+                    foreach (var rating in e.Ratings ?? [])
+                    {
+                        xml.WriteStartElement("rating");
+                        if (rating.System is not null) xml.WriteAttributeString("system", rating.System);
+                        xml.WriteElementString("value", Clean(rating.Value));
+                        xml.WriteEndElement();
+                    }
+
                     xml.WriteEndElement();
                 }
 
@@ -89,6 +127,16 @@ namespace LinTv.Core.Writers
 
             return nameList;
         }
+
+        /// The DTD's <stereo> values.
+        private static string StereoValue(AudioLayout audio) => audio switch
+        {
+            AudioLayout.Mono => "mono",
+            AudioLayout.DualMono => "bilingual",
+            AudioLayout.MatrixSurround => "dolby",
+            AudioLayout.Surround => "surround",
+            _ => "stereo"
+        };
 
         private static string XmlTvTime(DateTimeOffset time) =>
             time.UtcDateTime.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture) + " +0000";

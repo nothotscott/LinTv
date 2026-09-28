@@ -3,13 +3,14 @@
 LinTv is an HDHomeRun-compatible network tuner. It runs as an ASP.NET Core service on Linux and drives an ATSC tuner card (Hauppauge WinTV-HVR-1800) through the Linux DVB API. It serves live channels, an M3U, an XMLTV guide and HDHomeRun JSON to Plex, Jellyfin and VLC.
 
 - User-facing docs and the deploy guide are in `README.md`.
-- Architecture and broadcast/MPEG background are in `docs/ABOUT.md`. Read it before touching `Mpeg/`, the scanners, or the arbiter.
+- Architecture and broadcast/MPEG background are in `docs/ABOUT.md`. Read it before touching `LinTv.Mpeg`, the scanners, or the arbiter.
 
 ## Layout
 
 | Project | What goes here |
 |---|---|
-| `LinTv.Core` | All platform-independent logic: `Domain/` records, `Services/` (arbiter, scanners), `Stores/` (JSON persistence), `Writers/` (M3U, XMLTV, `ChannelUrls`), `Mpeg/` (TS framing, PSI/PSIP parsing, `ProgramDemuxer`), `Logging/` (file sink) |
+| `LinTv.Core` | All platform-independent logic: `Domain/` records, `Services/` (arbiter, scanners), `Stores/` (JSON persistence), `Writers/` (M3U, XMLTV, `ChannelUrls`), `Logging/` (file sink) |
+| `LinTv.Mpeg` | Wire formats only, no dependencies: TS framing, PSI section assembly, PSIP tables and descriptors (A/65), `PsipGuideCollector`, `ProgramDemuxer`. Maintained by Claude Code; cite the A/65 section or table for every field. |
 | `LinTv.Linux` | `LinuxDvbTuner` only: P/Invoke `open`/`ioctl`/`close` on `/dev/dvb`. `AllowUnsafeBlocks` is on. |
 | `LinTv.Api` | Host, DI wiring (`Program.cs`, including options validation and hosted services), thin attribute-routed controllers, and the Razor Pages UI (`Pages/`: Dashboard, Channels, Signal). HDHomeRun DTOs and `HdHomeRunJson` live in Core (`Domain/HdHomeRunModels.cs`), and `lineup.json` is built by `Services/HdHomeRunLineupService`. |
 

@@ -1,6 +1,7 @@
 using LinTv.Core.Configuration;
 using LinTv.Core.Driver;
 using LinTv.Core.Exceptions;
+using LinTv.Mpeg;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Buffers;
@@ -8,7 +9,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 
-namespace LinTv.Core.Mpeg
+namespace LinTv.Core.Services
 {
     /// Shares one read of the multiplex between any number of readers, e.g. two viewers on
     /// subchannels of the same RF channel, or an EPG scan riding along with a viewer.

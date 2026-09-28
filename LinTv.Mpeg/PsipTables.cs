@@ -2,16 +2,18 @@ using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
-namespace LinTv.Core.Mpeg
+namespace LinTv.Mpeg
 {
     /// One table_types entry of the Master Guide Table.
     public sealed record MgtEntry(ushort TableType, ushort Pid);
 
     /// One event of an Event Information Table. StartGps is GPS seconds since 1980-01-06.
+    /// Details come from the event's descriptors (PsipDescriptors).
     public sealed record EitEvent(
         ushort SourceId, ushort EventId,
         uint StartGps, int LengthSeconds,
-        int EtmLocation, string? Title);
+        int EtmLocation, string? Title,
+        EventDetails Details);
 
     public sealed record EitSection(
         ushort SourceId, byte Version,
@@ -98,9 +100,13 @@ namespace LinTv.Core.Mpeg
                 pos += titleLength;
 
                 int descriptorsLength = ((s[pos] & 0x0F) << 8) | s[pos + 1];
-                pos += 2 + descriptorsLength;
+                pos += 2;
+                if (pos + descriptorsLength > end) return false;
 
-                events.Add(new EitEvent(sourceId, eventId, start, length, etmLocation, title));
+                var details = PsipDescriptors.Parse(s.Slice(pos, descriptorsLength));
+                pos += descriptorsLength;
+
+                events.Add(new EitEvent(sourceId, eventId, start, length, etmLocation, title, details));
             }
 
             eit = new EitSection(sourceId, (byte)((s[5] >> 1) & 0x1F), s[6], s[7], events);
@@ -126,8 +132,7 @@ namespace LinTv.Core.Mpeg
         private const byte ModeUtf16 = 0x3F;
         private const byte ModeLastUnicodePage = 0x33;
 
-        /// The English string if present, otherwise the first decodable one. Returns null for
-        /// Huffman-compressed text (A/65 Annex C), which isn't supported yet.
+        /// The English string if present, otherwise the first decodable one.
         public static string? Decode(ReadOnlySpan<byte> mss)
         {
             if (mss.IsEmpty) return null;
@@ -158,7 +163,13 @@ namespace LinTv.Core.Mpeg
                     pos += length;
 
                     if (compression != 0)
-                        decodable = false;
+                    {
+                        // Tables 6.40/6.41: compression_type 0x01/0x02 are the Annex C Huffman
+                        // tables, sent with mode 0xFF.
+                        var decoded = PsipHuffman.Decode(compression, bytes);
+                        if (decoded is null) decodable = false;
+                        else sb.Append(decoded);
+                    }
                     else if (mode == ModeUtf16)
                         sb.Append(Encoding.BigEndianUnicode.GetString(bytes));
                     else if (mode <= ModeLastUnicodePage)

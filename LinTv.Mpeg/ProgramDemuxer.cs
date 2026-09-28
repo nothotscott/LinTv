@@ -1,6 +1,6 @@
 using System.Buffers;
 
-namespace LinTv.Core.Mpeg
+namespace LinTv.Mpeg
 {
     /// Cuts one program (virtual channel) out of a multiplex as a standalone single-program TS.
     /// Follows the PAT to the program's PMT, then to its elementary-stream and PCR PIDs.

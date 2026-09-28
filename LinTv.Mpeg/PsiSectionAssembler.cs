@@ -1,4 +1,4 @@
-namespace LinTv.Core.Mpeg
+namespace LinTv.Mpeg
 {
     /// Reassembles PSI/PSIP sections (PAT, PMT, VCT, EIT...) carried on a single PID.
     /// Sections can span packets, and several can share one packet; the pointer_field in

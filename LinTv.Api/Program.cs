@@ -8,7 +8,6 @@ using LinTv.Core.Driver;
 using LinTv.Core.Stores;
 using LinTv.Core.Writers;
 using LinTv.Core.Logging;
-using LinTv.Core.Mpeg;
 using LinTv.Core.Domain;
 
 // Resolve appsettings.json next to the binary, not the caller's working directory,
